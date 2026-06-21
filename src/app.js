@@ -4050,7 +4050,7 @@ function renderOverlays() {
 function createMarkerElement() {
   const marker = document.createElement("button");
   marker.type = "button";
-  marker.append(createIcon("navigation", "app-icon marker-icon"));
+  marker.append(createIcon("navigation-2", "app-icon marker-icon"));
   for (const eventName of ["pointerdown", "pointermove", "pointerup", "pointercancel", "dblclick", "contextmenu", "auxclick"]) {
     marker.addEventListener(eventName, (event) => {
       event.stopPropagation();
@@ -5680,8 +5680,6 @@ function drawMarkersToCanvas(ctx) {
     ctx.translate(point.x, point.y);
     ctx.rotate(degreesToRadians(capture.headingDeg));
     ctx.fillStyle = capture.setColor;
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = capture.id === state.selectedId ? 2 : 0;
     ctx.beginPath();
     ctx.moveTo(0, -12);
     ctx.lineTo(7, 11);
@@ -5689,9 +5687,6 @@ function drawMarkersToCanvas(ctx) {
     ctx.lineTo(-7, 11);
     ctx.closePath();
     ctx.fill();
-    if (capture.id === state.selectedId) {
-      ctx.stroke();
-    }
     ctx.restore();
   }
 }
