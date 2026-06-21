@@ -2,6 +2,8 @@
 
 Desktop app for displaying TARPS recon captures over an interactive Web Mercator map.
 
+![TARPS Intel Map screenshot](screenshot.png)
+
 ## Run The Desktop App
 
 Install the desktop dependencies once:
