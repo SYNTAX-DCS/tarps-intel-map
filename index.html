@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TARPS</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <!-- Lucide icons, inlined so the desktop app has no icon-font or network dependency. -->
+    <svg class="icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="icon-circle" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"></circle>
+      </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24">
+        <rect width="14" height="14" x="8" y="8" rx="2"></rect>
+        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+      </symbol>
+      <symbol id="icon-eraser" viewBox="0 0 24 24">
+        <path d="m7 21-4.3-4.3c-1-1-1-2.6 0-3.5L13.2 2.7c1-1 2.6-1 3.5 0l4.6 4.6c1 1 1 2.6 0 3.5L13 19"></path>
+        <path d="M22 21H7"></path>
+        <path d="m5 11 9 9"></path>
+      </symbol>
+      <symbol id="icon-maximize" viewBox="0 0 24 24">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3"></path>
+        <path d="M16 3h3a2 2 0 0 1 2 2v3"></path>
+        <path d="M21 16v3a2 2 0 0 1-2 2h-3"></path>
+        <path d="M8 21H5a2 2 0 0 1-2-2v-3"></path>
+      </symbol>
+      <symbol id="icon-minus" viewBox="0 0 24 24">
+        <path d="M5 12h14"></path>
+      </symbol>
+      <symbol id="icon-mouse-pointer-2" viewBox="0 0 24 24">
+        <path d="m4 4 7.1 17 2.5-7.4L21 11.1z"></path>
+      </symbol>
+      <symbol id="icon-navigation" viewBox="0 0 24 24">
+        <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
+      </symbol>
+      <symbol id="icon-panel-left-close" viewBox="0 0 24 24">
+        <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+        <path d="M9 3v18"></path>
+        <path d="m16 15-3-3 3-3"></path>
+      </symbol>
+      <symbol id="icon-panel-left-open" viewBox="0 0 24 24">
+        <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+        <path d="M9 3v18"></path>
+        <path d="m14 9 3 3-3 3"></path>
+      </symbol>
+      <symbol id="icon-pause" viewBox="0 0 24 24">
+        <rect width="4" height="16" x="6" y="4" rx="1"></rect>
+        <rect width="4" height="16" x="14" y="4" rx="1"></rect>
+      </symbol>
+      <symbol id="icon-pencil" viewBox="0 0 24 24">
+        <path d="M21.2 6.8a1 1 0 0 0-4-4L3.8 16.2a2 2 0 0 0-.5.8L2 21.4a.5.5 0 0 0 .6.6L7 20.7a2 2 0 0 0 .8-.5z"></path>
+        <path d="m15 5 4 4"></path>
+      </symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24">
+        <polygon points="6 3 20 12 6 21 6 3"></polygon>
+      </symbol>
+      <symbol id="icon-plus" viewBox="0 0 24 24">
+        <path d="M5 12h14"></path>
+        <path d="M12 5v14"></path>
+      </symbol>
+      <symbol id="icon-rotate-cw" viewBox="0 0 24 24">
+        <path d="M21 2v6h-6"></path>
+        <path d="M21 13a9 9 0 1 1-3-6.7L21 8"></path>
+      </symbol>
+      <symbol id="icon-scan" viewBox="0 0 24 24">
+        <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
+        <path d="M17 3h2a2 2 0 0 1 2 2v2"></path>
+        <path d="M21 17v2a2 2 0 0 1-2 2h-2"></path>
+        <path d="M7 21H5a2 2 0 0 1-2-2v-2"></path>
+      </symbol>
+      <symbol id="icon-slash" viewBox="0 0 24 24">
+        <path d="M5 19 19 5"></path>
+      </symbol>
+      <symbol id="icon-square" viewBox="0 0 24 24">
+        <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+      </symbol>
+      <symbol id="icon-trash-2" viewBox="0 0 24 24">
+        <path d="M3 6h18"></path>
+        <path d="M19 6v14c0 1.1-.9 2-2 2H7c-1.1 0-2-.9-2-2V6"></path>
+        <path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2"></path>
+        <path d="M10 11v6"></path>
+        <path d="M14 11v6"></path>
+      </symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24">
+        <path d="M18 6 6 18"></path>
+        <path d="m6 6 12 12"></path>
+      </symbol>
+    </svg>
+    <header id="appTitlebar" class="app-titlebar" aria-label="Application window">
+      <div class="titlebar-drag">
+        <img class="titlebar-icon" src="icon.png" alt="" />
+        <div class="titlebar-menu">
+          <button id="fileMenuButton" class="titlebar-menu-button" type="button" aria-haspopup="true" aria-expanded="false">File</button>
+          <div id="fileMenu" class="titlebar-menu-popover" role="menu" hidden>
+            <button id="newIntelButton" type="button" role="menuitem">New intel archive</button>
+            <button id="loadIntelButton" type="button" role="menuitem">Load intel archive</button>
+          </div>
+        </div>
+        <output id="intelStatus" class="titlebar-status" aria-live="polite"></output>
+      </div>
+      <div class="titlebar-controls" aria-label="Window controls">
+        <button id="windowMinimizeButton" class="window-control-button" type="button" title="Minimize" aria-label="Minimize">
+          <svg class="app-icon window-control-icon" aria-hidden="true"><use href="#icon-minus"></use></svg>
+        </button>
+        <button id="windowMaximizeButton" class="window-control-button" type="button" title="Maximize" aria-label="Maximize">
+          <svg class="app-icon window-control-icon" aria-hidden="true"><use href="#icon-maximize"></use></svg>
+        </button>
+        <button id="windowCloseButton" class="window-control-button window-control-close" type="button" title="Close" aria-label="Close">
+          <svg class="app-icon window-control-icon" aria-hidden="true"><use href="#icon-x"></use></svg>
+        </button>
+      </div>
+    </header>
+    <main class="app-shell">
+      <button id="sidebarToggleButton" class="sidebar-toggle" type="button" title="Collapse sidebar" aria-label="Collapse sidebar">
+        <svg class="app-icon ui-icon" aria-hidden="true"><use href="#icon-panel-left-close"></use></svg>
+      </button>
+      <aside class="sidebar" aria-label="Recon image controls">
+        <section class="control-group export-panel">
+          <button id="exportImageButton" type="button">Export image</button>
+        </section>
+
+        <section class="control-group">
+          <div class="section-heading">
+            <h2>Imported Runs</h2>
+            <button id="clearSetsButton" class="small-button" type="button">Clear</button>
+          </div>
+          <button id="addFolderButton" type="button">Import TARPS folder</button>
+          <p class="hint-text">Images are copied into the TARPS intel archive so they can be reopened later.</p>
+          <progress id="importProgress" class="import-progress" value="0" max="1" hidden></progress>
+          <div id="setList" class="set-list" aria-label="Loaded image sets"></div>
+          <output id="loadStatus" class="status" aria-live="polite"></output>
+        </section>
+
+        <section class="control-group">
+          <div class="section-heading">
+            <h2>Layers</h2>
+          </div>
+          <label for="opacityInput">Image opacity</label>
+          <input id="opacityInput" type="range" min="0" max="1" step="0.05" value="0.88" />
+          <label for="mapSourceInput">Basemap</label>
+          <select id="mapSourceInput">
+            <option value="grid">Coordinate grid</option>
+            <option value="osm">OpenStreetMap tiles</option>
+          </select>
+          <label class="check-row">
+            <input id="imagesInput" type="checkbox" checked />
+            <span>Photos</span>
+          </label>
+          <label class="check-row">
+            <input id="tracksInput" type="checkbox" checked />
+            <span>Flight path</span>
+          </label>
+          <label class="check-row">
+            <input id="markupInput" type="checkbox" checked />
+            <span>Markup</span>
+          </label>
+        </section>
+
+        <section class="control-group drawing-panel">
+          <div class="section-heading">
+            <h2>Markup</h2>
+          </div>
+          <div class="tool-grid" role="toolbar" aria-label="Markup tools">
+            <button id="drawSelectButton" class="tool-select-button" type="button" aria-pressed="true" aria-label="Pan/select" title="Pan/select">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-mouse-pointer-2"></use></svg>
+              <span class="sr-only">Pan/select</span>
+            </button>
+            <button id="drawMultiSelectButton" type="button" aria-pressed="false" aria-label="Multi-select" title="Multi-select">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-scan"></use></svg>
+              <span class="sr-only">Multi-select</span>
+            </button>
+            <button id="drawPencilButton" type="button" aria-pressed="false" aria-label="Free draw" title="Free draw">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-pencil"></use></svg>
+              <span class="sr-only">Free draw</span>
+            </button>
+            <button id="drawLineButton" type="button" aria-pressed="false" aria-label="Straight line" title="Straight line">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-slash"></use></svg>
+              <span class="sr-only">Straight line</span>
+            </button>
+            <button id="drawSquareButton" type="button" aria-pressed="false" aria-label="Square" title="Square">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-square"></use></svg>
+              <span class="sr-only">Square</span>
+            </button>
+            <button id="drawCircleButton" type="button" aria-pressed="false" aria-label="Circle" title="Circle">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-circle"></use></svg>
+              <span class="sr-only">Circle</span>
+            </button>
+            <button id="drawXButton" type="button" aria-pressed="false" aria-label="X marker" title="X marker">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-x"></use></svg>
+              <span class="sr-only">X marker</span>
+            </button>
+            <button id="drawEraserButton" type="button" aria-pressed="false" aria-label="Eraser" title="Eraser">
+              <svg class="app-icon tool-icon" aria-hidden="true"><use href="#icon-eraser"></use></svg>
+              <span class="sr-only">Eraser</span>
+            </button>
+          </div>
+          <label for="markupColorInput">Colour</label>
+          <input id="markupColorInput" type="color" value="#ff3333" />
+          <label for="markupThicknessInput">Line thickness</label>
+          <input id="markupThicknessInput" type="range" min="1" max="16" step="1" value="3" />
+          <button id="deleteMarkupButton" class="danger-button" type="button" disabled>Delete selected</button>
+        </section>
+
+        <section class="control-group timeline-control-panel">
+          <div class="section-heading">
+            <h2>Playback</h2>
+          </div>
+          <div class="timeline-actions">
+            <button id="playButton" class="button-with-icon" type="button" disabled>
+              <svg class="app-icon button-icon" aria-hidden="true"><use href="#icon-play"></use></svg>
+              <span>Play</span>
+            </button>
+            <label for="speedInput">Speed</label>
+            <select id="speedInput">
+              <option value="0.25">0.25x</option>
+              <option value="0.5">0.5x</option>
+              <option value="1">1x</option>
+              <option value="2">2x</option>
+              <option value="5">5x</option>
+              <option value="10">10x</option>
+              <option value="30" selected>30x</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="details-panel" aria-live="polite">
+          <h2>Selected</h2>
+          <dl id="selectedDetails">
+            <dt>Capture</dt>
+            <dd>None</dd>
+          </dl>
+        </section>
+
+        <section class="image-list-section">
+          <div class="section-heading">
+            <h2>Captures</h2>
+            <span id="countReadout">0</span>
+          </div>
+          <div id="imageList" class="image-list" role="listbox" aria-label="Loaded captures"></div>
+        </section>
+      </aside>
+
+      <section class="map-wrap" aria-label="Interactive map">
+        <div id="map" class="map" tabindex="0">
+          <div id="tileLayer" class="tile-layer"></div>
+          <svg id="gridLayer" class="grid-layer" aria-hidden="true"></svg>
+          <svg id="trackLayer" class="track-layer" aria-hidden="true"></svg>
+          <canvas id="overlayCanvas" class="overlay-canvas" aria-hidden="true"></canvas>
+          <div id="overlayLayer" class="overlay-layer"></div>
+          <div id="markerLayer" class="marker-layer"></div>
+          <div id="editHandleLayer" class="edit-handle-layer"></div>
+          <svg id="markupLayer" class="markup-layer" aria-label="Markup layer"></svg>
+          <div id="eraserCursor" class="eraser-cursor" hidden></div>
+          <div id="editToolbar" class="edit-toolbar" hidden></div>
+          <div class="map-click-hint" aria-hidden="true">
+            <span>Left Click = Select</span>
+            <span>Right Click = Send to Back</span>
+          </div>
+          <div class="map-controls" aria-label="Map controls">
+            <button id="zoomInButton" class="icon-button" type="button" title="Zoom in" aria-label="Zoom in">
+              <svg class="app-icon ui-icon" aria-hidden="true"><use href="#icon-plus"></use></svg>
+            </button>
+            <button id="zoomOutButton" class="icon-button" type="button" title="Zoom out" aria-label="Zoom out">
+              <svg class="app-icon ui-icon" aria-hidden="true"><use href="#icon-minus"></use></svg>
+            </button>
+            <button id="fitButton" class="icon-button" type="button" title="Fit captures" aria-label="Fit captures">
+              <svg class="app-icon ui-icon" aria-hidden="true"><use href="#icon-scan"></use></svg>
+            </button>
+          </div>
+          <div id="scaleBar" class="scale-bar" aria-hidden="true">
+            <span></span>
+            <strong>0 m</strong>
+          </div>
+          <div id="tileStatus" class="tile-status" aria-live="polite"></div>
+          <section class="map-timeline timeline-panel" aria-label="Timeline">
+            <div class="timeline-heading">
+              <span id="timelineCurrentReadout">--:--:--</span>
+            </div>
+            <div class="timeline-range">
+              <div id="timelineVisibleFill" class="timeline-visible-fill" aria-hidden="true"></div>
+              <div id="timelineTickLayer" class="timeline-tick-layer" aria-hidden="true"></div>
+              <input
+                id="timelineStartInput"
+                class="timeline-handle timeline-start-handle"
+                type="range"
+                min="0"
+                max="0"
+                step="1"
+                value="0"
+                disabled
+                aria-label="Timeline window start"
+              />
+              <input
+                id="timelineInput"
+                class="timeline-handle timeline-end-handle"
+                type="range"
+                min="0"
+                max="0"
+                step="1"
+                value="0"
+                disabled
+                aria-label="Timeline window end"
+              />
+            </div>
+            <div class="timeline-meta">
+              <span id="timelineStartReadout">--:--:--</span>
+              <span id="timelineEndReadout">--:--:--</span>
+            </div>
+          </section>
+          <section id="imageViewer" class="image-viewer" aria-label="Selected native image" hidden>
+            <div class="image-viewer-header">
+              <strong id="viewerTitle">Selected image</strong>
+              <button id="viewerCloseButton" type="button" title="Minimize image preview" aria-label="Minimize image preview">
+                <svg class="app-icon ui-icon" aria-hidden="true"><use href="#icon-minus"></use></svg>
+              </button>
+            </div>
+            <div class="image-viewer-frame">
+              <div id="viewerImageStage" class="image-viewer-stage">
+                <img id="viewerImage" alt="" />
+              </div>
+            </div>
+            <div class="image-viewer-controls">
+              <label for="viewerZoomInput">Zoom</label>
+              <input id="viewerZoomInput" type="range" min="0.25" max="4" step="0.25" value="1" />
+              <span id="viewerZoomReadout">100%</span>
+            </div>
+          </section>
+          <div id="mapAttribution" class="map-attribution">
+            &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="intelDialog" class="intel-dialog">
+      <form method="dialog">
+        <h2>Intel Archive</h2>
+        <p>Start by creating a new intel archive on disk or loading an existing one. It keeps copied images, image adjustments, and markup together.</p>
+        <div class="dialog-actions">
+          <button id="dialogNewIntelButton" type="button">New intel archive</button>
+          <button id="dialogLoadIntelButton" type="button">Load intel archive</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="resetEditDialog" class="intel-dialog reset-dialog">
+      <form method="dialog">
+        <h2>Reset Image Edit</h2>
+        <p>Choose which parts of the current edit draft should return to the original image projection.</p>
+        <div class="reset-options">
+          <label class="check-row">
+            <input id="resetLocationInput" type="checkbox" checked />
+            <span>Original location</span>
+          </label>
+          <label class="check-row">
+            <input id="resetSizeInput" type="checkbox" checked />
+            <span>Original size</span>
+          </label>
+          <label class="check-row">
+            <input id="resetRotationInput" type="checkbox" checked />
+            <span>Original rotation</span>
+          </label>
+          <label class="check-row">
+            <input id="resetWarpInput" type="checkbox" checked />
+            <span>Original warp</span>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button id="resetApplyButton" type="button">Apply reset</button>
+          <button id="resetCancelButton" type="button">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="deleteCaptureDialog" class="intel-dialog delete-dialog">
+      <form method="dialog">
+        <h2>Remove Image</h2>
+        <p id="deleteCaptureMessage">Remove this image from the intel archive?</p>
+        <div class="dialog-actions">
+          <button id="deleteCaptureConfirmButton" class="danger-button" type="button">Remove image</button>
+          <button id="deleteCaptureCancelButton" type="button">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script defer src="src/app.js"></script>
+  </body>
+</html>

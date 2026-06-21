@@ -1,0 +1,33 @@
+{
+  "name": "tarps-intel-map",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop TARPS intel map viewer and editor.",
+  "main": "electron-main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack:win": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "local.tarps.intelmap",
+    "productName": "TARPS Intel Map",
+    "icon": "icon.ico",
+    "files": [
+      "index.html",
+      "src/**/*",
+      "electron-main.js",
+      "electron-preload.js",
+      "icon.png",
+      "icon.ico",
+      "README.md"
+    ],
+    "win": {
+      "icon": "icon.ico",
+      "target": "portable"
+    }
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  }
+}
