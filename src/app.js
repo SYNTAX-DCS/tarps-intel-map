@@ -5,6 +5,7 @@ const MAX_MERCATOR_LAT = 85.05112878;
 const DEFAULT_CENTER = { lat: 25.255, lng: 55.375 };
 const DEFAULT_FOCAL_MM = 150;
 const DEFAULT_FRAME_MM = 100;
+const DEFAULT_GROUND_ELEVATION_FT = 0;
 const MAX_WARP_ATTITUDE_DEG = 45;
 const DEFAULT_OVERLAY_SOURCE_SIZE_PX = 2048;
 const MIN_RAY_DOWN_COMPONENT = 0.001;
@@ -21,6 +22,9 @@ const MARKUP_CLICK_SHAPE_SIZE_PX = 64;
 const MARKUP_ERASER_RADIUS_PX = 24;
 const PROJECTED_IMAGE_TRIANGLE_OVERLAP_PX = 1.2;
 const MAP_DRAG_CLICK_SUPPRESSION_PX = 4;
+const COORDINATE_FORMATS = ["dmm", "dms"];
+const COORDINATE_COPY_TOAST_MS = 1400;
+const VIEWER_WARP_GRID_SAMPLE_STEPS = 28;
 const EDIT_TOOLBAR_VIEWPORT_MARGIN_PX = 12;
 const EDIT_TOOLBAR_SEARCH_RADIUS_PX = 220;
 const EDIT_TOOLBAR_SEARCH_STEP_PX = 12;
@@ -63,6 +67,13 @@ const elements = {
   trackLayer: document.querySelector("#trackLayer"),
   markupLayer: document.querySelector("#markupLayer"),
   eraserCursor: document.querySelector("#eraserCursor"),
+  coordReadout: document.querySelector("#coordReadout"),
+  coordFormatButton: document.querySelector("#coordFormatButton"),
+  coordInfoButton: document.querySelector("#coordInfoButton"),
+  coordLat: document.querySelector("#coordLat"),
+  coordLng: document.querySelector("#coordLng"),
+  coordInfoTooltip: document.querySelector("#coordInfoTooltip"),
+  coordCopyToast: document.querySelector("#coordCopyToast"),
   mapControls: document.querySelector(".map-controls"),
   addFolderButton: document.querySelector("#addFolderButton"),
   clearSetsButton: document.querySelector("#clearSetsButton"),
@@ -90,6 +101,7 @@ const elements = {
   resetCancelButton: document.querySelector("#resetCancelButton"),
   opacityInput: document.querySelector("#opacityInput"),
   mapSourceInput: document.querySelector("#mapSourceInput"),
+  groundElevationInput: document.querySelector("#groundElevationInput"),
   imagesInput: document.querySelector("#imagesInput"),
   tracksInput: document.querySelector("#tracksInput"),
   markupInput: document.querySelector("#markupInput"),
@@ -116,6 +128,8 @@ const elements = {
   fitButton: document.querySelector("#fitButton"),
   zoomInButton: document.querySelector("#zoomInButton"),
   zoomOutButton: document.querySelector("#zoomOutButton"),
+  shortcutsButton: document.querySelector("#shortcutsButton"),
+  shortcutsPanel: document.querySelector("#shortcutsPanel"),
   scaleBar: document.querySelector("#scaleBar"),
   tileStatus: document.querySelector("#tileStatus"),
   mapAttribution: document.querySelector("#mapAttribution"),
@@ -126,9 +140,11 @@ const elements = {
   viewerFrame: document.querySelector(".image-viewer-frame"),
   viewerImageStage: document.querySelector("#viewerImageStage"),
   viewerImage: document.querySelector("#viewerImage"),
+  viewerWarpGrid: document.querySelector("#viewerWarpGrid"),
   viewerTitle: document.querySelector("#viewerTitle"),
   viewerZoomInput: document.querySelector("#viewerZoomInput"),
   viewerZoomReadout: document.querySelector("#viewerZoomReadout"),
+  viewerGridButton: document.querySelector("#viewerGridButton"),
   viewerCloseButton: document.querySelector("#viewerCloseButton"),
   editToolbar: document.querySelector("#editToolbar"),
 };
@@ -144,11 +160,17 @@ const state = {
   maxZoom: 19,
   focalMm: DEFAULT_FOCAL_MM,
   frameMm: DEFAULT_FRAME_MM,
+  groundElevationFt: DEFAULT_GROUND_ELEVATION_FT,
   applyAttitude: true,
   warpImages: true,
   imageOpacity: Number(elements.opacityInput.value),
   imageBlend: "normal",
   mapSource: "grid",
+  coordinateFormat: "dmm",
+  cursorLatLng: null,
+  cursorSource: null,
+  cursorClientPoint: null,
+  coordCopyTimerId: null,
   showImages: elements.imagesInput.checked,
   showFootprints: true,
   showTracks: elements.tracksInput.checked,
@@ -206,6 +228,7 @@ const state = {
   viewerZoom: Number(elements.viewerZoomInput.value),
   viewerPanX: 0,
   viewerPanY: 0,
+  showViewerWarpGrid: false,
   isViewerPanning: false,
   viewerPointerStart: null,
   isDragging: false,
@@ -920,8 +943,154 @@ function formatCoordinate(value, axis) {
   return `${hemi}${abs.toFixed(2)}`;
 }
 
+function formatCoordinateComponent(value, axis, format = state.coordinateFormat) {
+  const hemi = axis === "lat" ? (value >= 0 ? "N" : "S") : value >= 0 ? "E" : "W";
+  const width = axis === "lat" ? 2 : 3;
+  const abs = Math.abs(value);
+
+  if (format === "dms") {
+    let totalSeconds = Math.round(abs * 3600);
+    const degrees = Math.floor(totalSeconds / 3600);
+    totalSeconds -= degrees * 3600;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds - minutes * 60;
+    return `${hemi}${String(degrees).padStart(width, "0")} ${String(minutes).padStart(2, "0")}' ${String(seconds).padStart(2, "0")}"`;
+  }
+
+  let degrees = Math.floor(abs);
+  let minutes = Number(((abs - degrees) * 60).toFixed(4));
+  if (minutes >= 60) {
+    degrees += 1;
+    minutes = 0;
+  }
+  return `${hemi}${String(degrees).padStart(width, "0")} ${minutes.toFixed(4).padStart(7, "0")}'`;
+}
+
+function formatLatLng(point, format = state.coordinateFormat) {
+  if (!point || !Number.isFinite(point.lat) || !Number.isFinite(point.lng)) {
+    return null;
+  }
+  return {
+    lat: formatCoordinateComponent(point.lat, "lat", format),
+    lng: formatCoordinateComponent(point.lng, "lng", format),
+  };
+}
+
+function updateCoordinateFormatButton() {
+  const isDms = state.coordinateFormat === "dms";
+  elements.coordFormatButton.textContent = isDms ? "DMS" : "DMM";
+  elements.coordFormatButton.title = isDms
+    ? "Switch coordinate format to degrees and decimal minutes"
+    : "Switch coordinate format to degrees, minutes, and seconds";
+}
+
+function renderCursorCoordinates() {
+  updateCoordinateFormatButton();
+  const formatted = formatLatLng(state.cursorLatLng);
+  elements.coordLat.textContent = formatted?.lat ?? "--";
+  elements.coordLng.textContent = formatted?.lng ?? "--";
+  elements.coordReadout.classList.toggle("has-coordinates", Boolean(formatted));
+}
+
+function setCoordinateInfoOpen(isOpen) {
+  elements.coordReadout.classList.toggle("is-info-open", isOpen);
+  elements.coordInfoButton.setAttribute("aria-expanded", String(isOpen));
+}
+
+function setShortcutsPanelOpen(isOpen) {
+  elements.mapControls.classList.toggle("is-shortcuts-open", isOpen);
+  elements.shortcutsButton.setAttribute("aria-expanded", String(isOpen));
+  elements.shortcutsPanel.hidden = !isOpen;
+}
+
+function setCursorCoordinates(point, source, clientPoint = null) {
+  state.cursorLatLng = point ? normalizeLatLng(point, state.cursorLatLng ?? state.center) : null;
+  state.cursorSource = point ? source : null;
+  state.cursorClientPoint = point && clientPoint ? clientPoint : null;
+  renderCursorCoordinates();
+}
+
+function clearCursorCoordinates() {
+  state.cursorLatLng = null;
+  state.cursorSource = null;
+  state.cursorClientPoint = null;
+  renderCursorCoordinates();
+}
+
+function fallbackCopyText(text) {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.append(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+  } finally {
+    textarea.remove();
+  }
+}
+
+async function writeClipboardText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  fallbackCopyText(text);
+}
+
+function showCoordinateCopyToast() {
+  elements.coordCopyToast.hidden = false;
+  elements.coordReadout.classList.add("is-copy-confirmed");
+  if (state.coordCopyTimerId !== null) {
+    window.clearTimeout(state.coordCopyTimerId);
+  }
+  state.coordCopyTimerId = window.setTimeout(() => {
+    state.coordCopyTimerId = null;
+    elements.coordCopyToast.hidden = true;
+    elements.coordReadout.classList.remove("is-copy-confirmed");
+  }, COORDINATE_COPY_TOAST_MS);
+}
+
+async function copyCurrentCoordinates() {
+  const formatted = formatLatLng(state.cursorLatLng);
+  if (!formatted) {
+    return false;
+  }
+  await writeClipboardText(`${formatted.lat}, ${formatted.lng}`);
+  showCoordinateCopyToast();
+  return true;
+}
+
+function isPointerOverMapArea() {
+  return elements.map.matches(":hover");
+}
+
+function normalizeGroundElevationFt(value) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return DEFAULT_GROUND_ELEVATION_FT;
+  }
+  const elevation = Number(text);
+  return Number.isFinite(elevation) ? elevation : DEFAULT_GROUND_ELEVATION_FT;
+}
+
+function updateGroundElevationInput() {
+  elements.groundElevationInput.value = String(state.groundElevationFt);
+}
+
+function captureHeightAboveGroundFt(capture) {
+  return Number(capture.altFt) - state.groundElevationFt;
+}
+
+function captureHeightAboveGroundM(capture) {
+  return captureHeightAboveGroundFt(capture) * 0.3048;
+}
+
 function imageFootprintMeters(capture) {
-  const altitudeM = capture.altFt * 0.3048;
+  const altitudeM = captureHeightAboveGroundM(capture);
   const sideM = 2 * altitudeM * Math.tan(Math.atan(state.frameMm / (2 * state.focalMm)));
   return {
     widthM: sideM,
@@ -963,6 +1132,9 @@ function localOffsetLatLng(center, orientationDeg, rightM, forwardM) {
 
 function rectangularImageProjection(capture, center, reason = null) {
   const footprint = imageFootprintMeters(capture);
+  if (!Number.isFinite(footprint.altitudeM) || footprint.altitudeM <= 0) {
+    return locationOnlyProjection(capture, "ground-elevation");
+  }
   const halfWidthM = footprint.widthM / 2;
   const halfHeightM = footprint.heightM / 2;
   const cornersMeters = [
@@ -1005,8 +1177,11 @@ function warpedImageProjection(capture) {
 
   const footprint = imageFootprintMeters(capture);
   const halfFrameRatio = state.frameMm / (2 * state.focalMm);
-  if (!Number.isFinite(footprint.altitudeM) || footprint.altitudeM <= 0 || !Number.isFinite(halfFrameRatio)) {
+  if (!Number.isFinite(footprint.altitudeM) || !Number.isFinite(halfFrameRatio)) {
     return locationOnlyProjection(capture, "invalid-camera");
+  }
+  if (footprint.altitudeM <= 0) {
+    return locationOnlyProjection(capture, "ground-elevation");
   }
 
   const rightSlope = -Math.tan(degreesToRadians(capture.rollDeg));
@@ -1306,19 +1481,13 @@ function cssNumber(value) {
   return Math.abs(value) < 1e-8 ? "0" : value.toFixed(8);
 }
 
-function homographyForQuad(points, width, height) {
-  const sourcePoints = [
-    { x: 0, y: 0 },
-    { x: width, y: 0 },
-    { x: width, y: height },
-    { x: 0, y: height },
-  ];
+function homographyFromPointPairs(sourcePoints, targetPoints) {
   const rows = [];
   const values = [];
 
-  for (let index = 0; index < points.length; index += 1) {
+  for (let index = 0; index < sourcePoints.length; index += 1) {
     const source = sourcePoints[index];
-    const target = points[index];
+    const target = targetPoints[index];
     rows.push([source.x, source.y, 1, 0, 0, 0, -target.x * source.x, -target.x * source.y]);
     values.push(target.x);
     rows.push([0, 0, 0, source.x, source.y, 1, -target.y * source.x, -target.y * source.y]);
@@ -1330,6 +1499,18 @@ function homographyForQuad(points, width, height) {
     return null;
   }
   return solution;
+}
+
+function homographyForQuad(points, width, height) {
+  return homographyFromPointPairs(
+    [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: width, y: height },
+      { x: 0, y: height },
+    ],
+    points,
+  );
 }
 
 function projectHomography(solution, x, y) {
@@ -1480,7 +1661,10 @@ function captureGroundCenter(capture) {
     return position;
   }
 
-  const altitudeM = capture.altFt * 0.3048;
+  const altitudeM = captureHeightAboveGroundM(capture);
+  if (!Number.isFinite(altitudeM) || altitudeM <= 0) {
+    return position;
+  }
   const headingRad = degreesToRadians(capture.headingDeg);
   const forwardM = -altitudeM * Math.tan(degreesToRadians(capture.pitchDeg));
   const rightM = -altitudeM * Math.tan(degreesToRadians(capture.rollDeg));
@@ -1663,6 +1847,8 @@ function resetLoadedCaptures() {
   state.layerOrder = [];
   state.viewerCaptureId = null;
   state.viewerMinimized = true;
+  state.groundElevationFt = DEFAULT_GROUND_ELEVATION_FT;
+  updateGroundElevationInput();
   state.edit.active = false;
   state.edit.captureId = null;
   state.edit.draftAdjustments = null;
@@ -1789,6 +1975,13 @@ function applyIntelView(requireStoredSets = false) {
     state.zoom = clamp(zoom, state.minZoom, state.maxZoom);
   }
 
+  if (COORDINATE_FORMATS.includes(view.coordinateFormat)) {
+    state.coordinateFormat = view.coordinateFormat;
+  }
+  state.showViewerWarpGrid = Boolean(view.showViewerWarpGrid);
+  const groundElevationFt = Number(view.groundElevationFt);
+  state.groundElevationFt = Number.isFinite(groundElevationFt) ? groundElevationFt : DEFAULT_GROUND_ELEVATION_FT;
+
   if (state.captures.length && state.timelineMax >= state.timelineMin) {
     const currentTime = Number(view.currentTime);
     if (Number.isFinite(currentTime)) {
@@ -1803,6 +1996,9 @@ function applyIntelView(requireStoredSets = false) {
   }
 
   updateTimelineControls();
+  updateGroundElevationInput();
+  renderCursorCoordinates();
+  updateViewerGridButton();
   return true;
 }
 
@@ -1921,6 +2117,9 @@ function currentIntelPayload() {
       currentTime: state.currentTime,
       windowStartTime: state.windowStartTime,
       layerOrder: currentLayerOrderRefs(),
+      coordinateFormat: state.coordinateFormat,
+      showViewerWarpGrid: state.showViewerWarpGrid,
+      groundElevationFt: state.groundElevationFt,
     },
     sets,
     markup: state.markupItems,
@@ -2595,9 +2794,15 @@ function renderSelectedDetails() {
 
   const projection = imageGroundProjection(capture);
   const position = capturePosition(capture);
+  const locationOnlyReason =
+    projection.reason === "attitude-range"
+      ? "attitude over 45 deg"
+      : projection.reason === "ground-elevation"
+        ? "ground elevation at/above aircraft"
+        : "no ground projection";
   const projectionLabel =
     projection.type === "location-only"
-      ? `Location only (${projection.reason === "attitude-range" ? "attitude over 45 deg" : "no ground projection"})`
+      ? `Location only (${locationOnlyReason})`
       : projection.type === "warped"
         ? "Warped to ground"
         : projection.reason === "attitude-range"
@@ -2611,6 +2816,8 @@ function renderSelectedDetails() {
     ["Camera", capture.camera],
     ["Position", `${position.lat.toFixed(6)}, ${position.lng.toFixed(6)}`],
     ["Altitude", `${capture.altFt.toLocaleString()} ft`],
+    ["Ground", `${state.groundElevationFt.toLocaleString()} ft`],
+    ["Height AGL", `${Math.round(captureHeightAboveGroundFt(capture)).toLocaleString()} ft`],
     ["Heading", `${capture.headingDeg} deg`],
     ["Drift", `${capture.driftDeg} deg (ignored)`],
     ["Attitude", `pitch ${capture.pitchDeg} deg, roll ${capture.rollDeg} deg`],
@@ -2639,6 +2846,226 @@ function applyViewerZoom() {
   updateViewerTransform();
 }
 
+function updateViewerGridButton() {
+  elements.viewerGridButton.setAttribute("aria-pressed", String(state.showViewerWarpGrid));
+  elements.viewerGridButton.title = state.showViewerWarpGrid ? "Hide warped grid" : "Show warped grid";
+  elements.viewerGridButton.setAttribute(
+    "aria-label",
+    state.showViewerWarpGrid ? "Hide warped grid" : "Show warped grid",
+  );
+}
+
+function clearViewerWarpGrid() {
+  elements.viewerWarpGrid.hidden = true;
+  elements.viewerWarpGrid.replaceChildren();
+}
+
+function viewerImagePointFromClient(clientX, clientY) {
+  const capture = state.viewerCaptureId ? visibleCaptureById(state.viewerCaptureId) : null;
+  const naturalWidth = elements.viewerImage.naturalWidth;
+  const naturalHeight = elements.viewerImage.naturalHeight;
+  if (!capture || !naturalWidth || !naturalHeight || state.viewerZoom <= 0) {
+    return null;
+  }
+
+  const rotationDeg = capturePreviewRotationDegrees(capture);
+  const rotatedSize = rotatedRectangleSize(naturalWidth, naturalHeight, rotationDeg);
+  const stageRect = elements.viewerImageStage.getBoundingClientRect();
+  const stageX = (clientX - stageRect.left) / state.viewerZoom;
+  const stageY = (clientY - stageRect.top) / state.viewerZoom;
+  const centerX = rotatedSize.width / 2;
+  const centerY = rotatedSize.height / 2;
+  const radians = degreesToRadians(rotationDeg);
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = stageX - centerX;
+  const dy = stageY - centerY;
+  const imageX = dx * cos + dy * sin + naturalWidth / 2;
+  const imageY = -dx * sin + dy * cos + naturalHeight / 2;
+  if (imageX < 0 || imageY < 0 || imageX > naturalWidth || imageY > naturalHeight) {
+    return null;
+  }
+  return {
+    x: imageX,
+    y: imageY,
+    width: naturalWidth,
+    height: naturalHeight,
+  };
+}
+
+function imageLatLngForCapturePoint(capture, point) {
+  const projection = imageGroundProjection(capture);
+  if (projection.cornersMeters.length !== 4) {
+    return null;
+  }
+  const imageToMeters = homographyForQuad(
+    projection.cornersMeters.map((corner) => ({ x: corner.rightM, y: corner.forwardM })),
+    point.width,
+    point.height,
+  );
+  if (!imageToMeters) {
+    return null;
+  }
+  const local = projectHomography(imageToMeters, point.x, point.y);
+  if (!local) {
+    return null;
+  }
+  return normalizeLatLng(localMetersToLatLng(projection.center, {
+    rightM: local.x,
+    forwardM: local.y,
+  }), projection.center);
+}
+
+function viewerLatLngFromEvent(event) {
+  return viewerLatLngFromClient(event.clientX, event.clientY);
+}
+
+function viewerLatLngFromClient(clientX, clientY) {
+  const capture = state.viewerCaptureId ? visibleCaptureById(state.viewerCaptureId) : null;
+  const imagePoint = viewerImagePointFromClient(clientX, clientY);
+  return capture && imagePoint ? imageLatLngForCapturePoint(capture, imagePoint) : null;
+}
+
+function updateMapCursorCoordinatesFromEvent(event) {
+  setCursorCoordinates(screenToLatLng(event.clientX, event.clientY), "map", {
+    clientX: event.clientX,
+    clientY: event.clientY,
+  });
+}
+
+function updateViewerCursorCoordinatesFromEvent(event) {
+  const latLng = viewerLatLngFromEvent(event);
+  if (latLng) {
+    setCursorCoordinates(latLng, "image", {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+  } else {
+    clearCursorCoordinates();
+  }
+}
+
+function refreshCursorCoordinatesFromLastPointer() {
+  const point = state.cursorClientPoint;
+  if (!point) {
+    return;
+  }
+  if (state.cursorSource === "map" && isPointerOverMapArea()) {
+    setCursorCoordinates(screenToLatLng(point.clientX, point.clientY), "map", point);
+    return;
+  }
+  if (state.cursorSource === "image" && elements.viewerFrame.matches(":hover")) {
+    const latLng = viewerLatLngFromClient(point.clientX, point.clientY);
+    if (latLng) {
+      setCursorCoordinates(latLng, "image", point);
+      return;
+    }
+  }
+  clearCursorCoordinates();
+}
+
+function appendViewerGridPath(fragment, points) {
+  if (points.length < 2) {
+    return false;
+  }
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute(
+    "d",
+    points
+      .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+      .join(" "),
+  );
+  path.setAttribute("class", "viewer-warp-grid-line");
+  fragment.append(path);
+  return true;
+}
+
+function renderViewerWarpGrid() {
+  updateViewerGridButton();
+  clearViewerWarpGrid();
+  if (!state.showViewerWarpGrid || state.viewerMinimized) {
+    return;
+  }
+
+  const capture = state.viewerCaptureId ? visibleCaptureById(state.viewerCaptureId) : null;
+  const naturalWidth = elements.viewerImage.naturalWidth;
+  const naturalHeight = elements.viewerImage.naturalHeight;
+  if (!capture || !naturalWidth || !naturalHeight) {
+    return;
+  }
+
+  const projection = imageGroundProjection(capture);
+  if (projection.cornersMeters.length !== 4) {
+    return;
+  }
+
+  const meterCorners = projection.cornersMeters.map((corner) => ({ x: corner.rightM, y: corner.forwardM }));
+  const metersToImage = homographyFromPointPairs(
+    meterCorners,
+    [
+      { x: 0, y: 0 },
+      { x: naturalWidth, y: 0 },
+      { x: naturalWidth, y: naturalHeight },
+      { x: 0, y: naturalHeight },
+    ],
+  );
+  if (!metersToImage) {
+    return;
+  }
+
+  const xs = meterCorners.map((point) => point.x);
+  const ys = meterCorners.map((point) => point.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const spanX = maxX - minX;
+  const spanY = maxY - minY;
+  const step = niceDistance(Math.max(spanX, spanY) / 6);
+  if (!Number.isFinite(step) || step <= 0) {
+    return;
+  }
+
+  const rotationDeg = capturePreviewRotationDegrees(capture);
+  const rotatedSize = rotatedRectangleSize(naturalWidth, naturalHeight, rotationDeg);
+  elements.viewerWarpGrid.setAttribute("viewBox", `0 0 ${naturalWidth} ${naturalHeight}`);
+  elements.viewerWarpGrid.style.width = `${naturalWidth}px`;
+  elements.viewerWarpGrid.style.height = `${naturalHeight}px`;
+  elements.viewerWarpGrid.style.left = `${(rotatedSize.width - naturalWidth) / 2}px`;
+  elements.viewerWarpGrid.style.top = `${(rotatedSize.height - naturalHeight) / 2}px`;
+  elements.viewerWarpGrid.style.transform = `rotate(${rotationDeg}deg)`;
+
+  const fragment = document.createDocumentFragment();
+  let lineCount = 0;
+  const sampleLine = (value, isVertical) => {
+    const points = [];
+    for (let index = 0; index <= VIEWER_WARP_GRID_SAMPLE_STEPS; index += 1) {
+      const t = index / VIEWER_WARP_GRID_SAMPLE_STEPS;
+      const rightM = isVertical ? value : minX + spanX * t;
+      const forwardM = isVertical ? minY + spanY * t : value;
+      const point = projectHomography(metersToImage, rightM, forwardM);
+      if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+        points.push(point);
+      }
+    }
+    if (appendViewerGridPath(fragment, points)) {
+      lineCount += 1;
+    }
+  };
+
+  for (let x = Math.ceil(minX / step) * step; x <= maxX + step * 0.001; x += step) {
+    sampleLine(x, true);
+  }
+  for (let y = Math.ceil(minY / step) * step; y <= maxY + step * 0.001; y += step) {
+    sampleLine(y, false);
+  }
+
+  if (lineCount > 0) {
+    elements.viewerWarpGrid.append(fragment);
+    elements.viewerWarpGrid.hidden = false;
+  }
+}
+
 function updateViewerTransform() {
   if (elements.viewerImage.naturalWidth && elements.viewerImage.naturalHeight) {
     const capture = state.viewerCaptureId ? visibleCaptureById(state.viewerCaptureId) : null;
@@ -2654,6 +3081,9 @@ function updateViewerTransform() {
     elements.viewerImage.style.left = `${(rotatedSize.width - naturalWidth) / 2}px`;
     elements.viewerImage.style.top = `${(rotatedSize.height - naturalHeight) / 2}px`;
     elements.viewerImage.style.transform = `rotate(${rotationDeg}deg)`;
+    renderViewerWarpGrid();
+  } else {
+    clearViewerWarpGrid();
   }
 }
 
@@ -2698,11 +3128,14 @@ function renderImageViewer() {
     elements.viewerImage.style.left = "";
     elements.viewerImage.style.top = "";
     elements.viewerImage.style.transform = "";
+    clearViewerWarpGrid();
+    updateViewerGridButton();
     return;
   }
 
   elements.imageViewer.hidden = false;
   elements.imageViewer.classList.toggle("is-minimized", state.viewerMinimized);
+  updateViewerGridButton();
   elements.viewerTitle.textContent = captureSummary(capture);
   setIcon(elements.viewerCloseButton.querySelector(".ui-icon"), state.viewerMinimized ? "plus" : "minus");
   elements.viewerCloseButton.title = state.viewerMinimized ? "Expand image preview" : "Minimize image preview";
@@ -6158,9 +6591,31 @@ elements.opacityInput.addEventListener("input", () => {
   renderOverlays();
 });
 
+elements.coordFormatButton.addEventListener("click", () => {
+  const currentIndex = COORDINATE_FORMATS.indexOf(state.coordinateFormat);
+  state.coordinateFormat = COORDINATE_FORMATS[(currentIndex + 1) % COORDINATE_FORMATS.length];
+  renderCursorCoordinates();
+});
+
+elements.coordInfoButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setCoordinateInfoOpen(!elements.coordReadout.classList.contains("is-info-open"));
+});
+
 elements.mapSourceInput.addEventListener("change", () => {
   state.mapSource = elements.mapSourceInput.value;
   renderAll();
+});
+
+elements.groundElevationInput.addEventListener("input", () => {
+  const nextElevation = normalizeGroundElevationFt(elements.groundElevationInput.value);
+  if (nextElevation === state.groundElevationFt) {
+    return;
+  }
+  state.groundElevationFt = nextElevation;
+  renderAll();
+  refreshCursorCoordinatesFromLastPointer();
+  markIntelDirty();
 });
 
 for (const input of [elements.imagesInput, elements.tracksInput]) {
@@ -6253,6 +6708,11 @@ elements.viewerZoomInput.addEventListener("input", () => {
   applyViewerZoom();
 });
 
+elements.viewerGridButton.addEventListener("click", () => {
+  state.showViewerWarpGrid = !state.showViewerWarpGrid;
+  renderViewerWarpGrid();
+});
+
 elements.viewerCloseButton.addEventListener("click", toggleImageViewerMinimized);
 
 for (const eventName of ["pointerdown", "pointermove", "pointerup", "click", "dblclick", "contextmenu", "auxclick", "wheel"]) {
@@ -6266,6 +6726,16 @@ for (const eventName of ["pointerdown", "pointermove", "pointerup", "click", "db
     event.stopPropagation();
   });
 }
+
+elements.imageViewer.addEventListener(
+  "pointermove",
+  (event) => {
+    if (!event.target.closest?.(".image-viewer-frame")) {
+      clearCursorCoordinates();
+    }
+  },
+  { capture: true },
+);
 
 elements.imageViewer.addEventListener(
   "wheel",
@@ -6285,6 +6755,7 @@ elements.viewerFrame.addEventListener("pointerdown", (event) => {
     return;
   }
 
+  updateViewerCursorCoordinatesFromEvent(event);
   event.preventDefault();
   event.stopPropagation();
   elements.viewerFrame.setPointerCapture(event.pointerId);
@@ -6299,6 +6770,7 @@ elements.viewerFrame.addEventListener("pointerdown", (event) => {
 });
 
 elements.viewerFrame.addEventListener("pointermove", (event) => {
+  updateViewerCursorCoordinatesFromEvent(event);
   if (!state.isViewerPanning || !state.viewerPointerStart) {
     return;
   }
@@ -6308,6 +6780,7 @@ elements.viewerFrame.addEventListener("pointermove", (event) => {
   state.viewerPanX = state.viewerPointerStart.panX + event.clientX - state.viewerPointerStart.x;
   state.viewerPanY = state.viewerPointerStart.panY + event.clientY - state.viewerPointerStart.y;
   updateViewerTransform();
+  updateViewerCursorCoordinatesFromEvent(event);
 });
 
 function endViewerPan(event) {
@@ -6321,13 +6794,23 @@ function endViewerPan(event) {
 
 elements.viewerFrame.addEventListener("pointerup", endViewerPan);
 elements.viewerFrame.addEventListener("pointercancel", endViewerPan);
+elements.viewerFrame.addEventListener("pointerleave", () => {
+  if (elements.imageViewer.matches(":hover")) {
+    clearCursorCoordinates();
+  }
+});
 
 elements.fitButton.addEventListener("click", () => {
   fitCaptures();
   renderAll();
 });
 
-for (const controlSurface of [elements.mapControls, elements.mapTimeline].filter(Boolean)) {
+elements.shortcutsButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setShortcutsPanelOpen(!elements.mapControls.classList.contains("is-shortcuts-open"));
+});
+
+for (const controlSurface of [elements.coordReadout, elements.mapControls, elements.mapTimeline].filter(Boolean)) {
   for (const eventName of ["pointerdown", "pointermove", "pointerup", "click", "dblclick", "contextmenu", "auxclick", "wheel"]) {
     controlSurface.addEventListener(eventName, (event) => {
       event.stopPropagation();
@@ -6383,6 +6866,8 @@ function scrubTimeline(event) {
 }
 
 elements.map.addEventListener("pointerdown", (event) => {
+  updateMapCursorCoordinatesFromEvent(event);
+
   if (startMarkupDrawing(event)) {
     return;
   }
@@ -6431,6 +6916,7 @@ elements.map.addEventListener("pointerdown", (event) => {
 });
 
 elements.map.addEventListener("pointermove", (event) => {
+  updateMapCursorCoordinatesFromEvent(event);
   updateEraserHover(event);
 
   if (updateMarkupResize(event)) {
@@ -6474,6 +6960,7 @@ elements.map.addEventListener("pointermove", (event) => {
     state.pointerStart.centerPoint.y - dy,
     state.zoom,
   ), state.center);
+  updateMapCursorCoordinatesFromEvent(event);
   scheduleRenderAll();
 });
 
@@ -6545,6 +7032,7 @@ elements.map.addEventListener("pointerleave", () => {
   if (!state.markupEraser) {
     setEraserCursor(null);
   }
+  clearCursorCoordinates();
 });
 
 elements.map.addEventListener("auxclick", (event) => {
@@ -6566,6 +7054,41 @@ window.addEventListener("keydown", (event) => {
   }
   event.preventDefault();
   deleteSelectedMarkupItem();
+});
+
+document.addEventListener("click", (event) => {
+  if (!event.target.closest?.("#coordReadout")) {
+    setCoordinateInfoOpen(false);
+  }
+  if (!event.target.closest?.(".map-controls")) {
+    setShortcutsPanelOpen(false);
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setCoordinateInfoOpen(false);
+    setShortcutsPanelOpen(false);
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (
+    event.key.toLowerCase() !== "c" ||
+    !event.ctrlKey ||
+    event.altKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    isTextEntryTarget(event.target) ||
+    !isPointerOverMapArea() ||
+    !state.cursorLatLng
+  ) {
+    return;
+  }
+  event.preventDefault();
+  copyCurrentCoordinates().catch((error) => {
+    console.error(error);
+  });
 });
 
 elements.map.addEventListener("keydown", (event) => {
@@ -6599,6 +7122,8 @@ window.addEventListener("resize", renderAll);
 renderSetList();
 renderIntelStatus();
 setMarkupTool("pan");
+updateGroundElevationInput();
+renderCursorCoordinates();
 setStatus(
   window.electronTarps
     ? "Create or load an intel archive, then import a TARPS folder."

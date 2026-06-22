@@ -932,6 +932,122 @@ input[type="color"] {
   pointer-events: none;
 }
 
+.coord-readout {
+  position: absolute;
+  left: 54px;
+  top: 12px;
+  z-index: 13;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  width: min(260px, calc(100% - 146px));
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 1px solid rgba(241, 244, 236, 0.2);
+  border-radius: 8px;
+  background: rgba(17, 19, 15, 0.82);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  color: var(--soft);
+  pointer-events: auto;
+}
+
+.coord-format-button {
+  width: 40px;
+  min-width: 40px;
+  min-height: 30px;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.coord-values {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.coord-values span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.coord-shortcut {
+  padding: 3px 5px;
+  border: 1px solid rgba(241, 244, 236, 0.18);
+  border-radius: 4px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.coord-info-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+.coord-info-button .ui-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.coord-info-tooltip {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  display: none;
+  width: min(320px, calc(100vw - 36px));
+  padding: 8px 10px;
+  border: 1px solid rgba(241, 244, 236, 0.2);
+  border-radius: 7px;
+  background: rgba(17, 19, 15, 0.94);
+  color: var(--soft);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.coord-info-button:hover + .coord-info-tooltip,
+.coord-info-button:focus-visible + .coord-info-tooltip,
+.coord-readout.is-info-open .coord-info-tooltip {
+  display: block;
+}
+
+.coord-copy-toast {
+  position: absolute;
+  inset: 4px;
+  display: grid;
+  place-items: center;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: rgba(120, 192, 145, 0.94);
+  color: #10120f;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  pointer-events: none;
+}
+
+.coord-copy-toast[hidden] {
+  display: none;
+}
+
 .is-hidden {
   display: none;
 }
@@ -1265,6 +1381,52 @@ input[type="color"] {
   z-index: 10;
 }
 
+.shortcuts-panel {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 10px);
+  width: min(300px, calc(100vw - 96px));
+  max-height: min(420px, calc(100vh - 88px));
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid rgba(241, 244, 236, 0.2);
+  border-radius: 8px;
+  background: rgba(17, 19, 15, 0.94);
+  color: var(--soft);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.36);
+}
+
+.shortcuts-panel[hidden] {
+  display: none;
+}
+
+.shortcuts-panel strong {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.shortcuts-panel dl {
+  display: grid;
+  grid-template-columns: minmax(82px, 0.8fr) minmax(0, 1fr);
+  gap: 7px 10px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
+.shortcuts-panel dt {
+  color: var(--text);
+  font-weight: 800;
+}
+
+.shortcuts-panel dd {
+  margin: 0;
+  color: var(--muted);
+}
+
 .icon-button {
   display: grid;
   place-items: center;
@@ -1545,13 +1707,13 @@ input[type="color"] {
   min-height: 150px;
   overflow: hidden;
   background: #050604;
-  cursor: grab;
+  cursor: crosshair;
   touch-action: none;
   user-select: none;
 }
 
 .image-viewer-frame.is-panning {
-  cursor: grabbing;
+  cursor: crosshair;
 }
 
 .image-viewer-stage {
@@ -1572,6 +1734,32 @@ input[type="color"] {
   will-change: transform;
 }
 
+.viewer-warp-grid {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  max-width: none;
+  overflow: hidden;
+  pointer-events: none;
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+.viewer-warp-grid[hidden] {
+  display: none;
+}
+
+.viewer-warp-grid-line {
+  fill: none;
+  stroke: rgba(224, 179, 95, 0.82);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 2px rgba(17, 19, 15, 0.85));
+}
+
 .image-viewer-controls {
   border-top: 1px solid rgba(66, 72, 59, 0.78);
   border-bottom: 0;
@@ -1586,6 +1774,15 @@ input[type="color"] {
   color: var(--muted);
   font-size: 12px;
   text-align: right;
+}
+
+.image-viewer-controls button {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
 }
 
 .map-attribution {
@@ -1668,6 +1865,20 @@ input[type="color"] {
 
   .map {
     height: 100%;
+  }
+
+  .coord-readout {
+    left: 12px;
+    top: 10px;
+    width: min(260px, calc(100% - 24px));
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+  }
+
+  .shortcuts-panel {
+    right: 0;
+    top: calc(100% + 8px);
+    width: min(300px, calc(100vw - 28px));
+    max-height: min(360px, calc(46vh - 78px));
   }
 
   .map-click-hint {
