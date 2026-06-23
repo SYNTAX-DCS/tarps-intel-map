@@ -9,6 +9,30 @@ const DEFAULT_GROUND_ELEVATION_FT = 0;
 const MAX_WARP_ATTITUDE_DEG = 45;
 const DEFAULT_OVERLAY_SOURCE_SIZE_PX = 2048;
 const MIN_RAY_DOWN_COMPONENT = 0.001;
+const TERRAIN_RAY_MAX_EXPANSIONS = 16;
+const TERRAIN_RAY_BISECTION_STEPS = 20;
+const TERRAIN_RAY_MAX_DISTANCE_M = 250000;
+const DCS_RASTER_TILE_CACHE_LIMIT = 96;
+const DCS_RASTER_MAX_VISIBLE_TILES = 64;
+const DCS_RASTER_TILE_SIZE = 1024;
+const DCS_ELEVATION_RASTER_CACHE_LIMIT = 3;
+const DCS_VECTOR_MAP_CACHE_LIMIT = 2;
+const DCS_VECTOR_MAP_MAX_SEGMENTS = 60000;
+const DCS_VECTOR_MAP_MAX_DRAW_SEGMENTS = 45000;
+const DCS_VECTOR_MAP_SCAN_WINDOW_BYTES = 220;
+const DCS_VECTOR_MAP_SUPPORTED_TYPES = new Set(["Line", "MGRS"]);
+const DCS_HEIGHT_MAP_OVERLAY_OPACITY = 0.64;
+const DCS_HEIGHT_MAP_MESH_TILE_PX = 64;
+const DCS_HEIGHT_MAP_MESH_MAX_AXIS_TILES = 32;
+const DCS_HEIGHT_MAP_MESH_OVERLAP_PX = 1;
+const DCS_HEIGHT_MAP_COLOR_STOPS = [
+  { value: 0, color: [38, 84, 186] },
+  { value: 0.18, color: [0, 181, 213] },
+  { value: 0.35, color: [68, 214, 114] },
+  { value: 0.55, color: [242, 224, 72] },
+  { value: 0.75, color: [247, 126, 52] },
+  { value: 1, color: [255, 244, 238] },
+];
 const INTEL_FILE_VERSION = 1;
 const INTEL_AUTO_SAVE_DELAY_MS = 650;
 const IMPORT_COPY_CONCURRENCY = 4;
@@ -46,6 +70,11 @@ const TILE_SOURCES = {
     template: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
   },
 };
+const MAP_PROVIDER_TYPES = Object.freeze({
+  GRID: "grid",
+  TILE: "tile",
+  DCS: "dcs",
+});
 
 const elements = {
   appShell: document.querySelector(".app-shell"),
@@ -59,6 +88,8 @@ const elements = {
   map: document.querySelector("#map"),
   mapTimeline: document.querySelector(".map-timeline"),
   tileLayer: document.querySelector("#tileLayer"),
+  dcsVectorLayer: document.querySelector("#dcsVectorLayer"),
+  dcsDebugLayer: document.querySelector("#dcsDebugLayer"),
   gridLayer: document.querySelector("#gridLayer"),
   overlayCanvas: document.querySelector("#overlayCanvas"),
   overlayLayer: document.querySelector("#overlayLayer"),
@@ -101,7 +132,12 @@ const elements = {
   resetCancelButton: document.querySelector("#resetCancelButton"),
   opacityInput: document.querySelector("#opacityInput"),
   mapSourceInput: document.querySelector("#mapSourceInput"),
+  dcsInstallButton: document.querySelector("#dcsInstallButton"),
+  dcsInstallStatus: document.querySelector("#dcsInstallStatus"),
+  dcsTerrainInput: document.querySelector("#dcsTerrainInput"),
   groundElevationInput: document.querySelector("#groundElevationInput"),
+  dcsTerrainProjectionInput: document.querySelector("#dcsTerrainProjectionInput"),
+  dcsHeightMapInput: document.querySelector("#dcsHeightMapInput"),
   imagesInput: document.querySelector("#imagesInput"),
   tracksInput: document.querySelector("#tracksInput"),
   markupInput: document.querySelector("#markupInput"),
@@ -166,6 +202,13 @@ const state = {
   imageOpacity: Number(elements.opacityInput.value),
   imageBlend: "normal",
   mapSource: "grid",
+  dcsInstallPath: null,
+  dcsTerrains: [],
+  dcsSelectedTerrainId: null,
+  dcsScanError: null,
+  dcsRasterTileCache: new Map(),
+  dcsElevationRasterCache: new Map(),
+  dcsVectorMapCache: new Map(),
   coordinateFormat: "dmm",
   cursorLatLng: null,
   cursorSource: null,
@@ -174,6 +217,8 @@ const state = {
   showImages: elements.imagesInput.checked,
   showFootprints: true,
   showTracks: elements.tracksInput.checked,
+  useDcsTerrainHeights: elements.dcsTerrainProjectionInput?.checked ?? true,
+  showDcsHeightMap: elements.dcsHeightMapInput?.checked ?? false,
   showMarkup: elements.markupInput.checked,
   markupTool: "pan",
   markupColor: elements.markupColorInput.value,
@@ -284,6 +329,186 @@ function setButtonIconLabel(button, iconName, label) {
   const labelElement = document.createElement("span");
   labelElement.textContent = label;
   button.replaceChildren(createIcon(iconName, "app-icon button-icon"), labelElement);
+}
+
+function dcsMapSourceValue(terrainId) {
+  return `dcs:${terrainId}`;
+}
+
+function isDcsMapSource(value) {
+  return String(value || "").startsWith("dcs:");
+}
+
+function terrainIdFromMapSource(value) {
+  return isDcsMapSource(value) ? String(value).slice(4) : null;
+}
+
+function dcsTerrainForId(terrainId) {
+  if (!terrainId) {
+    return null;
+  }
+  return state.dcsTerrains.find((terrain) => terrain.id === terrainId || terrain.directoryName === terrainId) ?? null;
+}
+
+function selectedDcsTerrain() {
+  return dcsTerrainForId(state.dcsSelectedTerrainId);
+}
+
+function activeDcsTerrainWithMap() {
+  const terrain = selectedDcsTerrain();
+  return terrain?.mapImage?.url && Array.isArray(terrain.mapImage.corners) ? terrain : null;
+}
+
+function mapProviderForSource(source = state.mapSource) {
+  if (source === "grid") {
+    return { type: MAP_PROVIDER_TYPES.GRID, source, tileSource: TILE_SOURCES.grid };
+  }
+  if (isDcsMapSource(source)) {
+    return { type: MAP_PROVIDER_TYPES.GRID, source: "grid", tileSource: TILE_SOURCES.grid, fallback: true };
+  }
+  const tileSource = TILE_SOURCES[source];
+  if (tileSource?.template) {
+    return { type: MAP_PROVIDER_TYPES.TILE, source, tileSource };
+  }
+  return { type: MAP_PROVIDER_TYPES.GRID, source: "grid", tileSource: TILE_SOURCES.grid, fallback: true };
+}
+
+function setDcsInstallStatus(message, isError = false) {
+  elements.dcsInstallStatus.textContent = message;
+  elements.dcsInstallStatus.classList.toggle("error", isError);
+}
+
+function optionElement(value, label, disabled = false) {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label;
+  option.disabled = disabled;
+  return option;
+}
+
+function updateMapSourceOptions() {
+  const currentValue = state.mapSource;
+  elements.mapSourceInput.replaceChildren(
+    optionElement("grid", TILE_SOURCES.grid.name),
+    optionElement("osm", TILE_SOURCES.osm.name),
+  );
+
+  const hasCurrentOption = Array.from(elements.mapSourceInput.options).some(
+    (option) => option.value === currentValue && !option.disabled,
+  );
+  if (hasCurrentOption) {
+    elements.mapSourceInput.value = currentValue;
+    return;
+  }
+
+  if (isDcsMapSource(currentValue)) {
+    state.dcsSelectedTerrainId = terrainIdFromMapSource(currentValue) ?? state.dcsSelectedTerrainId;
+    state.mapSource = "grid";
+  }
+  elements.mapSourceInput.value = state.mapSource;
+}
+
+function dcsTerrainHasElevation(terrain) {
+  return Boolean(terrain?.elevation || terrain?.lightmapElevation);
+}
+
+function updateDcsTerrainOptions() {
+  if (!elements.dcsTerrainInput) {
+    return;
+  }
+  const currentValue = state.dcsSelectedTerrainId;
+  elements.dcsTerrainInput.replaceChildren(optionElement("", "No DCS height map"));
+
+  const terrainsWithElevation = state.dcsTerrains.filter(dcsTerrainHasElevation);
+  for (const terrain of state.dcsTerrains) {
+    const hasElevation = dcsTerrainHasElevation(terrain);
+    const option = optionElement(terrain.id, terrain.name, !hasElevation);
+    option.title = hasElevation
+      ? "Use this DCS terrain height source for projection and the height-map overlay."
+      : "No readable DCS height source was found for this terrain.";
+    elements.dcsTerrainInput.append(option);
+  }
+
+  const hasCurrentOption = Array.from(elements.dcsTerrainInput.options).some(
+    (option) => option.value === currentValue && !option.disabled,
+  );
+  if (!hasCurrentOption) {
+    state.dcsSelectedTerrainId = terrainsWithElevation[0]?.id ?? null;
+  }
+  elements.dcsTerrainInput.value = state.dcsSelectedTerrainId ?? "";
+  elements.dcsTerrainInput.disabled = !state.dcsTerrains.length;
+}
+
+function describeDcsScan(result) {
+  if (!result?.installPath) {
+    return "No DCS install selected.";
+  }
+  if (result.error) {
+    return result.error;
+  }
+  if (!result.terrains.length) {
+    return "No installed DCS terrains found.";
+  }
+  const elevationCount = result.terrains.filter((terrain) => terrain.capabilities?.elevation).length;
+  const elevationGridCount = result.terrains.filter((terrain) => terrain.capabilities?.elevationGrid).length;
+  const lightmapElevationCount = result.terrains.filter((terrain) => terrain.capabilities?.lightmapElevation).length;
+  const surfaceCount = result.terrains.filter((terrain) => terrain.capabilities?.surfaceData).length;
+  return `${result.terrains.length} DCS terrain${result.terrains.length === 1 ? "" : "s"} found; ${elevationCount} height source${elevationCount === 1 ? "" : "s"} (${elevationGridCount} grid${elevationGridCount === 1 ? "" : "s"}, ${lightmapElevationCount} DCS lightmap${lightmapElevationCount === 1 ? "" : "s"}), ${surfaceCount} surface file set${surfaceCount === 1 ? "" : "s"} detected.`;
+}
+
+function applyDcsScanResult(result) {
+  if (!result) {
+    return false;
+  }
+  state.dcsInstallPath = result.installPath ?? state.dcsInstallPath;
+  state.dcsTerrains = Array.isArray(result.terrains) ? result.terrains : [];
+  state.dcsScanError = result.error ?? null;
+  state.dcsRasterTileCache.clear();
+  state.dcsElevationRasterCache.clear();
+  state.dcsVectorMapCache.clear();
+  updateMapSourceOptions();
+  updateDcsTerrainOptions();
+  setDcsInstallStatus(describeDcsScan(result), Boolean(result.error));
+  preloadSelectedDcsElevation();
+  return true;
+}
+
+async function scanStoredDcsInstall() {
+  if (!state.dcsInstallPath || !window.electronTarps?.scanDcsInstall) {
+    updateMapSourceOptions();
+    updateDcsTerrainOptions();
+    return false;
+  }
+  try {
+    const result = await window.electronTarps.scanDcsInstall(state.dcsInstallPath);
+    const changed = applyDcsScanResult(result);
+    renderAll();
+    renderSelectedDetails();
+    return changed;
+  } catch (error) {
+    state.dcsTerrains = [];
+    state.dcsScanError = error.message;
+    updateMapSourceOptions();
+    updateDcsTerrainOptions();
+    setDcsInstallStatus(error.message, true);
+    renderAll();
+    return false;
+  }
+}
+
+async function chooseDcsInstall() {
+  if (!window.electronTarps?.chooseDcsInstall) {
+    throw new Error("TARPS desktop bridge is unavailable.");
+  }
+  const result = await window.electronTarps.chooseDcsInstall();
+  if (!result) {
+    return false;
+  }
+  applyDcsScanResult(result);
+  renderAll();
+  renderSelectedDetails();
+  markIntelDirty();
+  return true;
 }
 
 function normalizeLongitude(lng) {
@@ -1081,8 +1306,347 @@ function updateGroundElevationInput() {
   elements.groundElevationInput.value = String(state.groundElevationFt);
 }
 
+function sampleElevationGridMeters(grid, point) {
+  if (!grid || grid.type !== "grid" || !Array.isArray(grid.values)) {
+    return null;
+  }
+  const { bounds, width, height, values } = grid;
+  const lat = Number(point?.lat);
+  const lng = Number(point?.lng);
+  if (
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lng) ||
+    bounds.maxLat <= bounds.minLat ||
+    bounds.maxLng <= bounds.minLng ||
+    lat < bounds.minLat ||
+    lat > bounds.maxLat ||
+    lng < bounds.minLng ||
+    lng > bounds.maxLng
+  ) {
+    return null;
+  }
+
+  const x = ((lng - bounds.minLng) / (bounds.maxLng - bounds.minLng)) * (width - 1);
+  const y = ((bounds.maxLat - lat) / (bounds.maxLat - bounds.minLat)) * (height - 1);
+  const x0 = Math.floor(clamp(x, 0, width - 1));
+  const y0 = Math.floor(clamp(y, 0, height - 1));
+  const x1 = Math.min(width - 1, x0 + 1);
+  const y1 = Math.min(height - 1, y0 + 1);
+  const tx = x - x0;
+  const ty = y - y0;
+  const sample = (sampleX, sampleY) => {
+    const value = values[sampleY * width + sampleX];
+    return Number.isFinite(value) ? value : null;
+  };
+  const topLeft = sample(x0, y0);
+  const topRight = sample(x1, y0);
+  const bottomRight = sample(x1, y1);
+  const bottomLeft = sample(x0, y1);
+  if ([topLeft, topRight, bottomRight, bottomLeft].some((value) => value === null)) {
+    return null;
+  }
+  const top = topLeft + (topRight - topLeft) * tx;
+  const bottom = bottomLeft + (bottomRight - bottomLeft) * tx;
+  return top + (bottom - top) * ty;
+}
+
+function hasTerrainElevationProvider(terrain = selectedDcsTerrain()) {
+  return state.useDcsTerrainHeights && Boolean(terrain?.elevation || terrain?.lightmapElevation);
+}
+
+function dcsPolynomialBasis(u, v, degree) {
+  const terms = [1, u, v];
+  if (degree >= 2) {
+    terms.push(u * u, u * v, v * v);
+  }
+  if (degree >= 3) {
+    terms.push(u * u * u, u * u * v, u * v * v, v * v * v);
+  }
+  return terms;
+}
+
+function applyDcsPolynomialOutput(model, outputKey, point) {
+  const coefficients = model?.[outputKey];
+  const input = model?.input;
+  if (!Array.isArray(coefficients) || !input?.keys || !input?.origin || !input?.scale) {
+    return NaN;
+  }
+  const first = Number(point?.[input.keys[0]]);
+  const second = Number(point?.[input.keys[1]]);
+  if (!Number.isFinite(first) || !Number.isFinite(second) || input.scale[0] === 0 || input.scale[1] === 0) {
+    return NaN;
+  }
+  const u = (first - input.origin[0]) / input.scale[0];
+  const v = (second - input.origin[1]) / input.scale[1];
+  const basis = dcsPolynomialBasis(u, v, Number(model.degree) || 1);
+  return coefficients.reduce((sum, coefficient, index) => sum + coefficient * basis[index], 0);
+}
+
+function dcsLocalPointFromLatLng(geoReference, point) {
+  if (geoReference?.inverse) {
+    const x = applyDcsPolynomialOutput(geoReference.inverse, "x", point);
+    const z = applyDcsPolynomialOutput(geoReference.inverse, "z", point);
+    return Number.isFinite(x) && Number.isFinite(z) ? { x, z } : null;
+  }
+  if (!geoReference || !Array.isArray(geoReference.lat) || !Array.isArray(geoReference.lng)) {
+    return null;
+  }
+  const lat = Number(point?.lat);
+  const lng = Number(point?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+  const latOffset = lat - geoReference.lat[0];
+  const lngOffset = lng - geoReference.lng[0];
+  const determinant = geoReference.lat[1] * geoReference.lng[2] - geoReference.lat[2] * geoReference.lng[1];
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-18) {
+    return null;
+  }
+  return {
+    x: (latOffset * geoReference.lng[2] - geoReference.lat[2] * lngOffset) / determinant,
+    z: (geoReference.lat[1] * lngOffset - latOffset * geoReference.lng[1]) / determinant,
+  };
+}
+
+function dcsLocalPointToLatLng(geoReference, point) {
+  if (geoReference?.forward) {
+    const lat = applyDcsPolynomialOutput(geoReference.forward, "lat", point);
+    const lng = applyDcsPolynomialOutput(geoReference.forward, "lng", point);
+    return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+  }
+  if (!geoReference || !Array.isArray(geoReference.lat) || !Array.isArray(geoReference.lng)) {
+    return null;
+  }
+  const x = Number(point?.x);
+  const z = Number(point?.z);
+  if (!Number.isFinite(x) || !Number.isFinite(z)) {
+    return null;
+  }
+  const lat = geoReference.lat[0] + geoReference.lat[1] * x + geoReference.lat[2] * z;
+  const lng = geoReference.lng[0] + geoReference.lng[1] * x + geoReference.lng[2] * z;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+  return { lat, lng };
+}
+
+function dcsLightmapElevationCacheKey(terrain, lightmap) {
+  return `${terrain?.directoryName ?? terrain?.id ?? "terrain"}:${lightmap?.url ?? ""}`;
+}
+
+function dcsLightmapElevationCacheStatus(terrain) {
+  const lightmap = terrain?.lightmapElevation;
+  if (!lightmap?.url) {
+    return null;
+  }
+  return state.dcsElevationRasterCache.get(dcsLightmapElevationCacheKey(terrain, lightmap))?.status ?? null;
+}
+
+function trimDcsElevationRasterCache() {
+  while (state.dcsElevationRasterCache.size > DCS_ELEVATION_RASTER_CACHE_LIMIT) {
+    const oldestKey = state.dcsElevationRasterCache.keys().next().value;
+    const oldest = state.dcsElevationRasterCache.get(oldestKey);
+    if (oldest?.status === "loading" && state.dcsElevationRasterCache.size <= DCS_ELEVATION_RASTER_CACHE_LIMIT + 1) {
+      break;
+    }
+    state.dcsElevationRasterCache.delete(oldestKey);
+  }
+}
+
+function rerenderAfterTerrainElevationLoaded() {
+  scheduleRenderAll();
+  renderSelectedDetails();
+  refreshCursorCoordinatesFromLastPointer();
+}
+
+function loadDcsLightmapElevation(terrain) {
+  const lightmap = terrain?.lightmapElevation;
+  if (!lightmap?.url) {
+    return null;
+  }
+
+  const cacheKey = dcsLightmapElevationCacheKey(terrain, lightmap);
+  const cached = state.dcsElevationRasterCache.get(cacheKey);
+  if (cached) {
+    state.dcsElevationRasterCache.delete(cacheKey);
+    state.dcsElevationRasterCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const record = {
+    status: "loading",
+    terrainId: terrain.id,
+    lightmap,
+    width: 0,
+    height: 0,
+    data: null,
+    error: null,
+    promise: null,
+  };
+  record.promise = new Promise((resolve, reject) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.crossOrigin = "anonymous";
+    image.addEventListener(
+      "load",
+      () => {
+        try {
+          const width = image.naturalWidth || image.width;
+          const height = image.naturalHeight || image.height;
+          if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 1 || height <= 1) {
+            throw new Error("DCS lightmap elevation image has invalid dimensions.");
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(image, 0, 0);
+          const imageData = ctx.getImageData(0, 0, width, height);
+          record.status = "loaded";
+          record.width = width;
+          record.height = height;
+          record.data = imageData.data;
+          resolve(record);
+          rerenderAfterTerrainElevationLoaded();
+        } catch (error) {
+          record.status = "failed";
+          record.error = error.message;
+          reject(error);
+          rerenderAfterTerrainElevationLoaded();
+        }
+      },
+      { once: true },
+    );
+    image.addEventListener(
+      "error",
+      () => {
+        const error = new Error("DCS lightmap elevation image could not be loaded.");
+        record.status = "failed";
+        record.error = error.message;
+        reject(error);
+        rerenderAfterTerrainElevationLoaded();
+      },
+      { once: true },
+    );
+    image.src = lightmap.url;
+  });
+
+  record.promise.catch(() => null);
+  state.dcsElevationRasterCache.set(cacheKey, record);
+  trimDcsElevationRasterCache();
+  return record;
+}
+
+function preloadSelectedDcsElevation() {
+  const terrain = selectedDcsTerrain();
+  if (terrain?.lightmapElevation) {
+    loadDcsLightmapElevation(terrain);
+  }
+}
+
+function sampleDcsLightmapElevationMeters(terrain, point) {
+  const lightmap = terrain?.lightmapElevation;
+  if (!lightmap?.localBounds || !terrain?.geoReference) {
+    return null;
+  }
+  const cached = loadDcsLightmapElevation(terrain);
+  if (cached?.status !== "loaded" || !cached.data || cached.width <= 1 || cached.height <= 1) {
+    return null;
+  }
+
+  const local = dcsLocalPointFromLatLng(terrain.geoReference, point);
+  if (!local) {
+    return null;
+  }
+
+  const { localBounds } = lightmap;
+  const pixelSizeX = Number(lightmap.pixelSizeX);
+  const pixelSizeZ = Number(lightmap.pixelSizeZ);
+  const minElevationM = Number(lightmap.minElevationM);
+  const maxElevationM = Number(lightmap.maxElevationM);
+  if (
+    ![localBounds.minX, localBounds.maxX, localBounds.minZ, localBounds.maxZ, pixelSizeX, pixelSizeZ, minElevationM, maxElevationM].every(
+      Number.isFinite,
+    ) ||
+    pixelSizeX <= 0 ||
+    pixelSizeZ <= 0 ||
+    maxElevationM <= minElevationM
+  ) {
+    return null;
+  }
+
+  const column = (local.z - localBounds.minZ) / pixelSizeZ;
+  const row = cached.height - 1 - (local.x - localBounds.minX) / pixelSizeX;
+  if (column < 0 || column > cached.width - 1 || row < 0 || row > cached.height - 1) {
+    return null;
+  }
+
+  const x0 = Math.floor(clamp(column, 0, cached.width - 1));
+  const y0 = Math.floor(clamp(row, 0, cached.height - 1));
+  const x1 = Math.min(cached.width - 1, x0 + 1);
+  const y1 = Math.min(cached.height - 1, y0 + 1);
+  const tx = column - x0;
+  const ty = row - y0;
+  const sampleAlpha = (sampleX, sampleY) => cached.data[(sampleY * cached.width + sampleX) * 4 + 3];
+  const topLeft = sampleAlpha(x0, y0);
+  const topRight = sampleAlpha(x1, y0);
+  const bottomRight = sampleAlpha(x1, y1);
+  const bottomLeft = sampleAlpha(x0, y1);
+  if (![topLeft, topRight, bottomRight, bottomLeft].every(Number.isFinite)) {
+    return null;
+  }
+  const top = topLeft + (topRight - topLeft) * tx;
+  const bottom = bottomLeft + (bottomRight - bottomLeft) * tx;
+  const alpha = top + (bottom - top) * ty;
+  return minElevationM + (alpha / 255) * (maxElevationM - minElevationM);
+}
+
+function terrainElevationMetersAt(point) {
+  if (!state.useDcsTerrainHeights) {
+    return null;
+  }
+  const terrain = selectedDcsTerrain();
+  if (!terrain) {
+    return null;
+  }
+  if (terrain.elevation) {
+    const gridElevationM = sampleElevationGridMeters(terrain.elevation, point);
+    if (gridElevationM !== null) {
+      return gridElevationM;
+    }
+  }
+  if (terrain.lightmapElevation) {
+    return sampleDcsLightmapElevationMeters(terrain, point);
+  }
+  return null;
+}
+
+function groundElevationFtAt(point) {
+  const terrainElevationM = terrainElevationMetersAt(point);
+  return terrainElevationM === null ? state.groundElevationFt : terrainElevationM / 0.3048;
+}
+
+function selectedTerrainElevationLabel(point) {
+  const terrain = selectedDcsTerrain();
+  if (terrain && !state.useDcsTerrainHeights) {
+    return `${state.groundElevationFt.toLocaleString()} ft (manual, DCS terrain off)`;
+  }
+  const terrainElevationM = terrainElevationMetersAt(point);
+  if (!terrain || terrainElevationM === null) {
+    const lightmapStatus = dcsLightmapElevationCacheStatus(terrain);
+    if (lightmapStatus === "loading") {
+      return `${state.groundElevationFt.toLocaleString()} ft (manual, DCS terrain loading)`;
+    }
+    if (lightmapStatus === "failed") {
+      return `${state.groundElevationFt.toLocaleString()} ft (manual, DCS terrain unavailable)`;
+    }
+    return `${state.groundElevationFt.toLocaleString()} ft (manual)`;
+  }
+  return `${Math.round(terrainElevationM / 0.3048).toLocaleString()} ft (${terrain.name})`;
+}
+
 function captureHeightAboveGroundFt(capture) {
-  return Number(capture.altFt) - state.groundElevationFt;
+  return Number(capture.altFt) - groundElevationFtAt(capturePosition(capture));
 }
 
 function captureHeightAboveGroundM(capture) {
@@ -1128,6 +1692,68 @@ function localOffsetLatLng(center, orientationDeg, rightM, forwardM) {
   const northM = forwardM * Math.cos(orientationRad) + rightM * Math.cos(orientationRad + Math.PI / 2);
   const eastM = forwardM * Math.sin(orientationRad) + rightM * Math.sin(orientationRad + Math.PI / 2);
   return offsetLatLng(center.lat, center.lng, northM, eastM);
+}
+
+function cameraRayPointAtScale(capture, ray, scale) {
+  return localOffsetLatLng(capturePosition(capture), imageRotationDegrees(capture), ray.x * scale, ray.y * scale);
+}
+
+function cameraRayClearanceM(capture, ray, scale) {
+  const point = cameraRayPointAtScale(capture, ray, scale);
+  const terrainElevationM = terrainElevationMetersAt(point);
+  if (terrainElevationM === null) {
+    return null;
+  }
+  return Number(capture.altFt) * 0.3048 - ray.z * scale - terrainElevationM;
+}
+
+function projectCameraRayToTerrain(capture, ray) {
+  if (ray.z <= MIN_RAY_DOWN_COMPONENT || !hasTerrainElevationProvider()) {
+    return null;
+  }
+
+  const flatHeightM = Math.max(1, (Number(capture.altFt) - groundElevationFtAt(capturePosition(capture))) * 0.3048);
+  let low = 0;
+  let high = Math.max(1, flatHeightM / ray.z);
+  const initialClearance = cameraRayClearanceM(capture, ray, low);
+  if (initialClearance === null || initialClearance <= 0) {
+    return null;
+  }
+
+  let highClearance = cameraRayClearanceM(capture, ray, high);
+  for (
+    let expansion = 0;
+    (highClearance === null || highClearance > 0) &&
+    expansion < TERRAIN_RAY_MAX_EXPANSIONS &&
+    high < TERRAIN_RAY_MAX_DISTANCE_M;
+    expansion += 1
+  ) {
+    high *= 2;
+    highClearance = cameraRayClearanceM(capture, ray, high);
+  }
+  if (highClearance === null || highClearance > 0) {
+    return null;
+  }
+
+  for (let step = 0; step < TERRAIN_RAY_BISECTION_STEPS; step += 1) {
+    const mid = (low + high) / 2;
+    const clearance = cameraRayClearanceM(capture, ray, mid);
+    if (clearance === null) {
+      return null;
+    }
+    if (clearance > 0) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+
+  const scale = (low + high) / 2;
+  return {
+    point: cameraRayPointAtScale(capture, ray, scale),
+    rightM: ray.x * scale,
+    forwardM: ray.y * scale,
+  };
 }
 
 function rectangularImageProjection(capture, center, reason = null) {
@@ -1198,15 +1824,43 @@ function warpedImageProjection(capture) {
     return locationOnlyProjection(capture, "invalid-camera");
   }
 
-  const center = captureGroundCenter(capture);
-  const centerRightM = rightSlope * footprint.altitudeM;
-  const centerForwardM = forwardSlope * footprint.altitudeM;
   const sourceCorners = [
     { u: -halfFrameRatio, v: halfFrameRatio },
     { u: halfFrameRatio, v: halfFrameRatio },
     { u: halfFrameRatio, v: -halfFrameRatio },
     { u: -halfFrameRatio, v: -halfFrameRatio },
   ];
+
+  const terrainCenterHit = projectCameraRayToTerrain(capture, centerDirection);
+  if (terrainCenterHit) {
+    const terrainCorners = [];
+    for (const corner of sourceCorners) {
+      const ray = {
+        x: centerDirection.x + corner.u * rightAxis.x + corner.v * forwardAxis.x,
+        y: centerDirection.y + corner.u * rightAxis.y + corner.v * forwardAxis.y,
+        z: centerDirection.z + corner.u * rightAxis.z + corner.v * forwardAxis.z,
+      };
+      const hit = projectCameraRayToTerrain(capture, ray);
+      if (!hit) {
+        terrainCorners.length = 0;
+        break;
+      }
+      terrainCorners.push(hit.point);
+    }
+    if (terrainCorners.length === 4) {
+      return {
+        type: "warped",
+        reason: "terrain",
+        center: terrainCenterHit.point,
+        corners: terrainCorners,
+        cornersMeters: terrainCorners.map((corner) => latLngToLocalMeters(terrainCenterHit.point, corner)),
+      };
+    }
+  }
+
+  const center = captureGroundCenter(capture, false);
+  const centerRightM = rightSlope * footprint.altitudeM;
+  const centerForwardM = forwardSlope * footprint.altitudeM;
   const corners = [];
   const cornersMeters = [];
 
@@ -1655,10 +2309,20 @@ function updateCaptureOverlaySize(capture, width, height) {
   return updateCaptureSize(capture, width, height, "overlayWidth", "overlayHeight");
 }
 
-function captureGroundCenter(capture) {
+function captureGroundCenter(capture, useTerrain = true) {
   const position = capturePosition(capture);
   if (!state.applyAttitude) {
     return position;
+  }
+
+  const centerRay = normalizeVector({
+    x: -Math.tan(degreesToRadians(capture.rollDeg)),
+    y: -Math.tan(degreesToRadians(capture.pitchDeg)),
+    z: 1,
+  });
+  const terrainHit = useTerrain && centerRay ? projectCameraRayToTerrain(capture, centerRay) : null;
+  if (terrainHit) {
+    return terrainHit.point;
   }
 
   const altitudeM = captureHeightAboveGroundM(capture);
@@ -1978,7 +2642,28 @@ function applyIntelView(requireStoredSets = false) {
   if (COORDINATE_FORMATS.includes(view.coordinateFormat)) {
     state.coordinateFormat = view.coordinateFormat;
   }
+  if (typeof view.dcsInstallPath === "string") {
+    state.dcsInstallPath = view.dcsInstallPath;
+  }
+  const storedDcsTerrainId =
+    typeof view.dcsTerrainId === "string" ? view.dcsTerrainId : terrainIdFromMapSource(view.mapSource);
+  if (storedDcsTerrainId) {
+    state.dcsSelectedTerrainId = storedDcsTerrainId;
+  }
+  if (view.mapSource === "grid" || view.mapSource === "osm") {
+    state.mapSource = view.mapSource;
+  } else if (isDcsMapSource(view.mapSource)) {
+    state.mapSource = "grid";
+  }
   state.showViewerWarpGrid = Boolean(view.showViewerWarpGrid);
+  state.useDcsTerrainHeights = view.useDcsTerrainHeights !== false;
+  if (elements.dcsTerrainProjectionInput) {
+    elements.dcsTerrainProjectionInput.checked = state.useDcsTerrainHeights;
+  }
+  state.showDcsHeightMap = Boolean(view.showDcsHeightMap);
+  if (elements.dcsHeightMapInput) {
+    elements.dcsHeightMapInput.checked = state.showDcsHeightMap;
+  }
   const groundElevationFt = Number(view.groundElevationFt);
   state.groundElevationFt = Number.isFinite(groundElevationFt) ? groundElevationFt : DEFAULT_GROUND_ELEVATION_FT;
 
@@ -1996,6 +2681,11 @@ function applyIntelView(requireStoredSets = false) {
   }
 
   updateTimelineControls();
+  if (state.dcsInstallPath) {
+    scanStoredDcsInstall();
+  } else {
+    updateMapSourceOptions();
+  }
   updateGroundElevationInput();
   renderCursorCoordinates();
   updateViewerGridButton();
@@ -2119,7 +2809,12 @@ function currentIntelPayload() {
       layerOrder: currentLayerOrderRefs(),
       coordinateFormat: state.coordinateFormat,
       showViewerWarpGrid: state.showViewerWarpGrid,
+      useDcsTerrainHeights: state.useDcsTerrainHeights,
+      showDcsHeightMap: state.showDcsHeightMap,
       groundElevationFt: state.groundElevationFt,
+      mapSource: state.mapSource,
+      dcsInstallPath: state.dcsInstallPath,
+      dcsTerrainId: state.dcsSelectedTerrainId,
     },
     sets,
     markup: state.markupItems,
@@ -2804,7 +3499,9 @@ function renderSelectedDetails() {
     projection.type === "location-only"
       ? `Location only (${locationOnlyReason})`
       : projection.type === "warped"
-        ? "Warped to ground"
+        ? projection.reason === "terrain"
+          ? "Warped to terrain"
+          : "Warped to ground"
         : projection.reason === "attitude-range"
           ? "Unwarped (attitude over 45 deg)"
           : projection.reason === "warp-disabled"
@@ -2816,7 +3513,7 @@ function renderSelectedDetails() {
     ["Camera", capture.camera],
     ["Position", `${position.lat.toFixed(6)}, ${position.lng.toFixed(6)}`],
     ["Altitude", `${capture.altFt.toLocaleString()} ft`],
-    ["Ground", `${state.groundElevationFt.toLocaleString()} ft`],
+    ["Ground", selectedTerrainElevationLabel(position)],
     ["Height AGL", `${Math.round(captureHeightAboveGroundFt(capture)).toLocaleString()} ft`],
     ["Heading", `${capture.headingDeg} deg`],
     ["Drift", `${capture.driftDeg} deg (ignored)`],
@@ -3835,8 +4532,884 @@ function fitCaptures() {
   state.zoom = state.minZoom;
 }
 
+function mercatorMetersPerPixel(lat, zoom) {
+  return (Math.cos(degreesToRadians(clamp(lat, -MAX_MERCATOR_LAT, MAX_MERCATOR_LAT))) * EARTH_CIRCUMFERENCE_M) / (2 ** zoom * TILE_SIZE);
+}
+
+function selectedDcsRasterScale(rasterCharts) {
+  const scales = Array.isArray(rasterCharts?.scales) ? rasterCharts.scales.map(Number).filter(Number.isFinite) : [];
+  if (!scales.length) {
+    return null;
+  }
+  const sorted = [...scales].sort((a, b) => a - b);
+  const targetMPerPixel = mercatorMetersPerPixel(state.center.lat, state.zoom);
+  let selected = sorted[0];
+  for (const scale of sorted) {
+    if (scale <= targetMPerPixel * 1.15) {
+      selected = scale;
+    }
+  }
+  return selected;
+}
+
+function dcsRasterTileGeometry(tile) {
+  if (!Array.isArray(tile?.corners) || tile.corners.length !== 4) {
+    return null;
+  }
+  const points = tile.corners.map((corner) => screenPointFor(corner.lat, corner.lng));
+  const screenBounds = boundsForScreenPoints(points);
+  return {
+    tile,
+    points,
+    screenBounds,
+    distanceFromCenter: Math.hypot(
+      (screenBounds.minX + screenBounds.maxX) / 2 - elements.map.clientWidth / 2,
+      (screenBounds.minY + screenBounds.maxY) / 2 - elements.map.clientHeight / 2,
+    ),
+  };
+}
+
+function visibleDcsRasterTiles(terrain) {
+  const rasterCharts = terrain?.rasterCharts;
+  if (!Array.isArray(rasterCharts?.tiles) || !rasterCharts.tiles.length) {
+    return [];
+  }
+  const scale = selectedDcsRasterScale(rasterCharts);
+  if (!scale) {
+    return [];
+  }
+  const viewport = mapViewportBounds(256);
+  return rasterCharts.tiles
+    .filter((tile) => Number(tile.scaleMPerPixel) === scale)
+    .map(dcsRasterTileGeometry)
+    .filter((item) => item && screenBoundsIntersect(item.screenBounds, viewport))
+    .sort((a, b) => a.distanceFromCenter - b.distanceFromCenter)
+    .slice(0, DCS_RASTER_MAX_VISIBLE_TILES);
+}
+
+function dcsVectorMapCacheKey(terrain) {
+  return `${terrain?.directoryName ?? terrain?.id ?? "terrain"}:${terrain?.vectorMap?.url ?? ""}`;
+}
+
+function trimDcsVectorMapCache() {
+  while (state.dcsVectorMapCache.size > DCS_VECTOR_MAP_CACHE_LIMIT) {
+    const oldestKey = state.dcsVectorMapCache.keys().next().value;
+    const oldest = state.dcsVectorMapCache.get(oldestKey);
+    if (oldest?.status === "loading" && state.dcsVectorMapCache.size <= DCS_VECTOR_MAP_CACHE_LIMIT + 1) {
+      break;
+    }
+    state.dcsVectorMapCache.delete(oldestKey);
+  }
+}
+
+function byteNeedle(text) {
+  return Array.from(text, (char) => char.charCodeAt(0));
+}
+
+const DCS_SUP5_MAP_NEEDLE = byteNeedle("Map4.0");
+const DCS_SUP5_VIEW_NEEDLE = byteNeedle("VIEW_IN_MAPTEX");
+
+function indexOfBytes(bytes, needle, startIndex, endIndex = bytes.length) {
+  const maxIndex = Math.min(endIndex, bytes.length) - needle.length;
+  for (let index = Math.max(0, startIndex); index <= maxIndex; index += 1) {
+    let matched = true;
+    for (let needleIndex = 0; needleIndex < needle.length; needleIndex += 1) {
+      if (bytes[index + needleIndex] !== needle[needleIndex]) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function asciiFromBytes(bytes, offset, length) {
+  if (offset < 0 || length <= 0 || offset + length > bytes.length) {
+    return "";
+  }
+  let text = "";
+  for (let index = 0; index < length; index += 1) {
+    const code = bytes[offset + index];
+    if (code < 32 || code > 126) {
+      return "";
+    }
+    text += String.fromCharCode(code);
+  }
+  return text;
+}
+
+function isFiniteLatLng(point) {
+  return (
+    Number.isFinite(point?.lat) &&
+    Number.isFinite(point?.lng) &&
+    point.lat >= -90 &&
+    point.lat <= 90 &&
+    point.lng >= -180 &&
+    point.lng <= 180
+  );
+}
+
+function updateVectorDecodeBounds(bounds, start, end) {
+  bounds.minLat = Math.min(bounds.minLat, start.lat, end.lat);
+  bounds.maxLat = Math.max(bounds.maxLat, start.lat, end.lat);
+  bounds.minLng = Math.min(bounds.minLng, start.lng, end.lng);
+  bounds.maxLng = Math.max(bounds.maxLng, start.lng, end.lng);
+}
+
+function decodeDcsSup5VectorMap(buffer, terrain) {
+  if (!terrain?.geoReference) {
+    throw new Error("DCS vector map has no terrain georeference.");
+  }
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const segments = [];
+  const typeCounts = {};
+  const bounds = { minLat: Infinity, maxLat: -Infinity, minLng: Infinity, maxLng: -Infinity };
+  let recordsSeen = 0;
+  let position = 0;
+
+  while (segments.length < DCS_VECTOR_MAP_MAX_SEGMENTS) {
+    position = indexOfBytes(bytes, DCS_SUP5_MAP_NEEDLE, position);
+    if (position < 0) {
+      break;
+    }
+    const typeLengthOffset = position + DCS_SUP5_MAP_NEEDLE.length;
+    if (typeLengthOffset + 4 >= bytes.length) {
+      break;
+    }
+    const typeLength = view.getUint32(typeLengthOffset, true);
+    const typeOffset = typeLengthOffset + 4;
+    if (!Number.isInteger(typeLength) || typeLength <= 0 || typeLength > 64 || typeOffset + typeLength >= bytes.length) {
+      position += DCS_SUP5_MAP_NEEDLE.length;
+      continue;
+    }
+    const type = asciiFromBytes(bytes, typeOffset, typeLength);
+    if (!DCS_VECTOR_MAP_SUPPORTED_TYPES.has(type)) {
+      position += DCS_SUP5_MAP_NEEDLE.length;
+      continue;
+    }
+
+    recordsSeen += 1;
+    typeCounts[type] = (typeCounts[type] ?? 0) + 1;
+    const viewOffset = indexOfBytes(
+      bytes,
+      DCS_SUP5_VIEW_NEEDLE,
+      typeOffset + typeLength,
+      position + DCS_VECTOR_MAP_SCAN_WINDOW_BYTES,
+    );
+    if (viewOffset < 0) {
+      position += DCS_SUP5_MAP_NEEDLE.length;
+      continue;
+    }
+
+    const dataOffset = viewOffset + DCS_SUP5_VIEW_NEEDLE.length;
+    if (dataOffset + 96 > bytes.length) {
+      position += DCS_SUP5_MAP_NEEDLE.length;
+      continue;
+    }
+
+    const matrixOffset = dataOffset + 8;
+    const translateX = view.getFloat32(matrixOffset + 12 * 4, true);
+    const translateZ = view.getFloat32(matrixOffset + 14 * 4, true);
+    const startX = translateX + view.getFloat32(dataOffset + 72, true);
+    const startZ = translateZ + view.getFloat32(dataOffset + 80, true);
+    const endX = translateX + view.getFloat32(dataOffset + 84, true);
+    const endZ = translateZ + view.getFloat32(dataOffset + 92, true);
+    if (![translateX, translateZ, startX, startZ, endX, endZ].every(Number.isFinite)) {
+      position += DCS_SUP5_MAP_NEEDLE.length;
+      continue;
+    }
+    const maxCoordinate = Math.max(Math.abs(startX), Math.abs(startZ), Math.abs(endX), Math.abs(endZ));
+    const distance = Math.hypot(endX - startX, endZ - startZ);
+    if (maxCoordinate > 5_000_000 || distance <= 1 || distance > 500_000) {
+      position += DCS_SUP5_MAP_NEEDLE.length;
+      continue;
+    }
+
+    const start = dcsLocalPointToLatLng(terrain.geoReference, { x: startX, z: startZ });
+    const end = dcsLocalPointToLatLng(terrain.geoReference, { x: endX, z: endZ });
+    if (!isFiniteLatLng(start) || !isFiniteLatLng(end)) {
+      position += DCS_SUP5_MAP_NEEDLE.length;
+      continue;
+    }
+
+    segments.push({ type, start, end });
+    updateVectorDecodeBounds(bounds, start, end);
+    position += DCS_SUP5_MAP_NEEDLE.length;
+  }
+
+  if (!segments.length) {
+    throw new Error("No supported DCS vector line records were decoded.");
+  }
+
+  return {
+    segments,
+    bounds,
+    typeCounts,
+    recordsSeen,
+  };
+}
+
+function rerenderAfterDcsVectorMapLoaded() {
+  scheduleRenderAll();
+  updateTileStatus();
+}
+
+function loadDcsVectorMap(terrain) {
+  const vectorMap = terrain?.vectorMap;
+  if (!vectorMap?.url || vectorMap.readable === false) {
+    return null;
+  }
+  const cacheKey = dcsVectorMapCacheKey(terrain);
+  const cached = state.dcsVectorMapCache.get(cacheKey);
+  if (cached) {
+    state.dcsVectorMapCache.delete(cacheKey);
+    state.dcsVectorMapCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const record = {
+    status: "loading",
+    terrainId: terrain.id,
+    vectorMap,
+    segments: [],
+    bounds: null,
+    typeCounts: {},
+    recordsSeen: 0,
+    error: null,
+    promise: null,
+  };
+  record.promise = fetch(vectorMap.url)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`Could not load DCS vector map (${response.status}).`);
+      }
+      return response.arrayBuffer();
+    })
+    .then((buffer) => decodeDcsSup5VectorMap(buffer, terrain))
+    .then((decoded) => {
+      record.status = "loaded";
+      record.segments = decoded.segments;
+      record.bounds = decoded.bounds;
+      record.typeCounts = decoded.typeCounts;
+      record.recordsSeen = decoded.recordsSeen;
+      rerenderAfterDcsVectorMapLoaded();
+      return record;
+    })
+    .catch((error) => {
+      record.status = "failed";
+      record.error = error.message;
+      rerenderAfterDcsVectorMapLoaded();
+      return record;
+    });
+
+  state.dcsVectorMapCache.set(cacheKey, record);
+  trimDcsVectorMapCache();
+  return record;
+}
+
+function clearDcsVectorLayer() {
+  const canvas = elements.dcsVectorLayer;
+  if (!canvas) {
+    return;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function resizeMapCanvasLayer(canvas) {
+  const rect = elements.map.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(rect.width * dpr));
+  const height = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  canvas.style.width = `${rect.width}px`;
+  canvas.style.height = `${rect.height}px`;
+  return { rect, dpr };
+}
+
+function drawDcsVectorSegmentsToCanvas(ctx, segments, width, height, dpr = 1) {
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "#10120f";
+  ctx.fillRect(0, 0, width, height);
+
+  const viewport = { minX: -80, minY: -80, maxX: width + 80, maxY: height + 80 };
+  const passes = [
+    { type: "MGRS", stroke: "rgba(92, 156, 164, 0.36)", lineWidth: 0.7 },
+    { type: "Line", stroke: "rgba(203, 220, 186, 0.72)", lineWidth: 1.05 },
+  ];
+  let drawn = 0;
+  for (const pass of passes) {
+    ctx.beginPath();
+    let pathCount = 0;
+    for (const segment of segments) {
+      if (drawn >= DCS_VECTOR_MAP_MAX_DRAW_SEGMENTS) {
+        break;
+      }
+      if (segment.type !== pass.type) {
+        continue;
+      }
+      const start = screenPointFor(segment.start.lat, segment.start.lng);
+      const end = screenPointFor(segment.end.lat, segment.end.lng);
+      const segmentBounds = {
+        minX: Math.min(start.x, end.x),
+        maxX: Math.max(start.x, end.x),
+        minY: Math.min(start.y, end.y),
+        maxY: Math.max(start.y, end.y),
+      };
+      if (!screenBoundsIntersect(segmentBounds, viewport)) {
+        continue;
+      }
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      drawn += 1;
+      pathCount += 1;
+    }
+    if (pathCount) {
+      ctx.strokeStyle = pass.stroke;
+      ctx.lineWidth = pass.lineWidth;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function dcsVectorRecordHasMapLinework(record) {
+  return Boolean(record?.segments?.some((segment) => segment.type === "Line"));
+}
+
+function renderDcsVectorMap(terrain) {
+  const vectorMap = terrain?.vectorMap;
+  if (!elements.dcsVectorLayer || !vectorMap?.url || vectorMap.readable === false || !terrain?.geoReference) {
+    clearDcsVectorLayer();
+    return false;
+  }
+
+  const { rect, dpr } = resizeMapCanvasLayer(elements.dcsVectorLayer);
+  const ctx = elements.dcsVectorLayer.getContext("2d");
+  elements.tileLayer.replaceChildren();
+  state.tileStatuses.clear();
+  elements.mapAttribution.textContent = `DCS World vector map: ${terrain.name}`;
+
+  const record = loadDcsVectorMap(terrain);
+  if (!record) {
+    clearDcsVectorLayer();
+    return false;
+  }
+  if (record.status === "failed") {
+    clearDcsVectorLayer();
+    return false;
+  }
+  if (record.status !== "loaded") {
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#10120f";
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.restore();
+    elements.map.classList.add("tiles-loading");
+    elements.map.classList.remove("tiles-unavailable");
+    elements.tileStatus.textContent = "Loading DCS vector map...";
+    elements.tileStatus.classList.add("visible");
+    return true;
+  }
+
+  elements.map.classList.remove("tiles-loading", "tiles-unavailable");
+  elements.tileStatus.classList.remove("visible");
+  elements.tileStatus.textContent = "";
+  if (!dcsVectorRecordHasMapLinework(record)) {
+    clearDcsVectorLayer();
+    return false;
+  }
+  drawDcsVectorSegmentsToCanvas(ctx, record.segments, rect.width, rect.height, dpr);
+  return true;
+}
+
+function clearDcsDebugLayer() {
+  elements.dcsDebugLayer?.replaceChildren();
+}
+
+function interpolateColorStops(value, stops) {
+  const normalized = clamp(Number(value), 0, 1);
+  for (let index = 1; index < stops.length; index += 1) {
+    const previous = stops[index - 1];
+    const next = stops[index];
+    if (normalized <= next.value) {
+      const span = Math.max(0.0001, next.value - previous.value);
+      const ratio = (normalized - previous.value) / span;
+      return previous.color.map((channel, channelIndex) =>
+        Math.round(channel + (next.color[channelIndex] - channel) * ratio),
+      );
+    }
+  }
+  return stops[stops.length - 1].color;
+}
+
+function colorizedDcsHeightMapCanvas(record) {
+  if (record?.colorCanvas) {
+    return record.colorCanvas;
+  }
+  if (record?.status !== "loaded" || !record.data || !record.width || !record.height) {
+    return null;
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = record.width;
+  canvas.height = record.height;
+  const pixels = new Uint8ClampedArray(record.width * record.height * 4);
+  for (let index = 0; index < record.width * record.height; index += 1) {
+    const heightValue = record.data[index * 4 + 3] / 255;
+    const [red, green, blue] = interpolateColorStops(heightValue, DCS_HEIGHT_MAP_COLOR_STOPS);
+    const target = index * 4;
+    pixels[target] = red;
+    pixels[target + 1] = green;
+    pixels[target + 2] = blue;
+    pixels[target + 3] = 255;
+  }
+  canvas.getContext("2d").putImageData(new ImageData(pixels, record.width, record.height), 0, 0);
+  canvas.className = "dcs-height-map-canvas";
+  record.colorCanvas = canvas;
+  return canvas;
+}
+
+function colorizedDcsHeightMapTiles(record) {
+  if (record?.colorTiles) {
+    return record.colorTiles;
+  }
+  const sourceCanvas = colorizedDcsHeightMapCanvas(record);
+  if (!sourceCanvas) {
+    return [];
+  }
+  const columns = Math.max(
+    1,
+    Math.min(DCS_HEIGHT_MAP_MESH_MAX_AXIS_TILES, Math.ceil(sourceCanvas.width / DCS_HEIGHT_MAP_MESH_TILE_PX)),
+  );
+  const rows = Math.max(
+    1,
+    Math.min(DCS_HEIGHT_MAP_MESH_MAX_AXIS_TILES, Math.ceil(sourceCanvas.height / DCS_HEIGHT_MAP_MESH_TILE_PX)),
+  );
+  const tiles = [];
+  for (let row = 0; row < rows; row += 1) {
+    const sy = Math.round((sourceCanvas.height * row) / rows);
+    const nextY = Math.round((sourceCanvas.height * (row + 1)) / rows);
+    for (let column = 0; column < columns; column += 1) {
+      const sx = Math.round((sourceCanvas.width * column) / columns);
+      const nextX = Math.round((sourceCanvas.width * (column + 1)) / columns);
+      const expandedX = Math.max(0, sx - DCS_HEIGHT_MAP_MESH_OVERLAP_PX);
+      const expandedY = Math.max(0, sy - DCS_HEIGHT_MAP_MESH_OVERLAP_PX);
+      const expandedRight = Math.min(sourceCanvas.width, nextX + DCS_HEIGHT_MAP_MESH_OVERLAP_PX);
+      const expandedBottom = Math.min(sourceCanvas.height, nextY + DCS_HEIGHT_MAP_MESH_OVERLAP_PX);
+      const sw = Math.max(1, expandedRight - expandedX);
+      const sh = Math.max(1, expandedBottom - expandedY);
+      const canvas = document.createElement("canvas");
+      canvas.width = sw;
+      canvas.height = sh;
+      canvas.className = "dcs-height-map-canvas";
+      canvas.getContext("2d").drawImage(sourceCanvas, expandedX, expandedY, sw, sh, 0, 0, sw, sh);
+      tiles.push({
+        row,
+        column,
+        sx: expandedX,
+        sy: expandedY,
+        sw,
+        sh,
+        canvas,
+      });
+    }
+  }
+  record.colorTiles = tiles;
+  return tiles;
+}
+
+function dcsLightmapAlignedLocalBounds(lightmap) {
+  const bounds = lightmap?.localBounds;
+  const pixelSizeX = Number(lightmap?.pixelSizeX);
+  const pixelSizeZ = Number(lightmap?.pixelSizeZ);
+  if (
+    !bounds ||
+    ![bounds.minX, bounds.maxX, bounds.minZ, bounds.maxZ, pixelSizeX, pixelSizeZ].every(Number.isFinite) ||
+    pixelSizeX <= 0 ||
+    pixelSizeZ <= 0
+  ) {
+    return null;
+  }
+  // The DCS lightmap pixels line up with the sampler when registered half a cell below/left of the raw bounds.
+  return {
+    minX: bounds.minX - pixelSizeX / 2,
+    maxX: bounds.maxX - pixelSizeX / 2,
+    minZ: bounds.minZ - pixelSizeZ / 2,
+    maxZ: bounds.maxZ - pixelSizeZ / 2,
+  };
+}
+
+function dcsLightmapLocalPointForPixel(lightmap, pixelX, pixelY, width, height) {
+  const bounds = dcsLightmapAlignedLocalBounds(lightmap);
+  if (!bounds || !width || !height) {
+    return null;
+  }
+  return {
+    x: bounds.maxX - (pixelY / height) * (bounds.maxX - bounds.minX),
+    z: bounds.minZ + (pixelX / width) * (bounds.maxZ - bounds.minZ),
+  };
+}
+
+function dcsLightmapTileCorners(terrain, tile, width, height) {
+  const lightmap = terrain?.lightmapElevation;
+  if (!lightmap || !tile || !terrain?.geoReference || !width || !height) {
+    return null;
+  }
+  const localCorners = [
+    dcsLightmapLocalPointForPixel(lightmap, tile.sx, tile.sy, width, height),
+    dcsLightmapLocalPointForPixel(lightmap, tile.sx + tile.sw, tile.sy, width, height),
+    dcsLightmapLocalPointForPixel(lightmap, tile.sx + tile.sw, tile.sy + tile.sh, width, height),
+    dcsLightmapLocalPointForPixel(lightmap, tile.sx, tile.sy + tile.sh, width, height),
+  ];
+  if (localCorners.some((corner) => !corner)) {
+    return null;
+  }
+  const corners = localCorners.map((point) => dcsLocalPointToLatLng(terrain.geoReference, point));
+  return corners.every(isFiniteLatLng) ? corners : null;
+}
+
+function renderDcsHeightMapOverlay(provider = mapProviderForSource()) {
+  const terrain = provider.type === MAP_PROVIDER_TYPES.DCS ? provider.terrain : selectedDcsTerrain();
+  const lightmap = terrain?.lightmapElevation;
+  if (!state.showDcsHeightMap || !lightmap?.url || !terrain?.geoReference || !elements.dcsDebugLayer) {
+    clearDcsDebugLayer();
+    return false;
+  }
+
+  const record = loadDcsLightmapElevation(terrain);
+  if (record?.status !== "loaded") {
+    clearDcsDebugLayer();
+    return true;
+  }
+  const tiles = colorizedDcsHeightMapTiles(record);
+  const width = record.width || Number(lightmap.width);
+  const height = record.height || Number(lightmap.height);
+  if (!tiles.length || !width || !height) {
+    clearDcsDebugLayer();
+    return false;
+  }
+
+  const viewport = mapViewportBounds(256);
+  const activeKeys = new Set();
+  let drawn = 0;
+  for (const tile of tiles) {
+    const corners = dcsLightmapTileCorners(terrain, tile, width, height);
+    if (!corners) {
+      continue;
+    }
+    const points = corners.map((corner) => screenPointFor(corner.lat, corner.lng));
+    if (!screenBoundsIntersect(boundsForScreenPoints(points), viewport)) {
+      continue;
+    }
+    const transform = matrix3dForQuad(points, tile.sw, tile.sh);
+    if (!transform) {
+      continue;
+    }
+    const key = `dcs-height-color:${terrain.id}:${lightmap.url}:${tile.row}:${tile.column}`;
+    activeKeys.add(key);
+    const canvas = tile.canvas;
+    canvas.dataset.key = key;
+    canvas.style.width = `${tile.sw}px`;
+    canvas.style.height = `${tile.sh}px`;
+    canvas.style.transform = transform;
+    if (canvas.parentElement !== elements.dcsDebugLayer) {
+      elements.dcsDebugLayer.append(canvas);
+    }
+    drawn += 1;
+  }
+
+  for (const canvas of Array.from(elements.dcsDebugLayer.children)) {
+    if (!activeKeys.has(canvas.dataset.key)) {
+      canvas.remove();
+    }
+  }
+  return drawn > 0;
+}
+
+function ddsFourCc(view) {
+  return String.fromCharCode(
+    view.getUint8(84),
+    view.getUint8(85),
+    view.getUint8(86),
+    view.getUint8(87),
+  );
+}
+
+function rgb565(color) {
+  return [
+    Math.round((((color >> 11) & 0x1f) * 255) / 31),
+    Math.round((((color >> 5) & 0x3f) * 255) / 63),
+    Math.round(((color & 0x1f) * 255) / 31),
+  ];
+}
+
+function decodeDdsDxt5ToCanvas(buffer) {
+  const view = new DataView(buffer);
+  if (view.getUint32(0, true) !== 0x20534444 || ddsFourCc(view) !== "DXT5") {
+    throw new Error("Unsupported DDS texture. Expected DXT5.");
+  }
+
+  const height = view.getUint32(12, true);
+  const width = view.getUint32(16, true);
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+    throw new Error("Unsupported DDS texture dimensions.");
+  }
+
+  const bytes = new Uint8Array(buffer);
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  const blocksWide = Math.ceil(width / 4);
+  const blocksHigh = Math.ceil(height / 4);
+  let offset = 128;
+
+  for (let blockY = 0; blockY < blocksHigh; blockY += 1) {
+    for (let blockX = 0; blockX < blocksWide; blockX += 1) {
+      if (offset + 16 > bytes.length) {
+        throw new Error("DDS texture ended before all DXT5 blocks were decoded.");
+      }
+
+      const alpha0 = bytes[offset];
+      const alpha1 = bytes[offset + 1];
+      const alphaPalette = [alpha0, alpha1];
+      if (alpha0 > alpha1) {
+        for (let index = 1; index <= 6; index += 1) {
+          alphaPalette.push(Math.round(((7 - index) * alpha0 + index * alpha1) / 7));
+        }
+      } else {
+        for (let index = 1; index <= 4; index += 1) {
+          alphaPalette.push(Math.round(((5 - index) * alpha0 + index * alpha1) / 5));
+        }
+        alphaPalette.push(0, 255);
+      }
+
+      let alphaBits = 0n;
+      for (let index = 0; index < 6; index += 1) {
+        alphaBits |= BigInt(bytes[offset + 2 + index]) << BigInt(8 * index);
+      }
+
+      const color0 = bytes[offset + 8] | (bytes[offset + 9] << 8);
+      const color1 = bytes[offset + 10] | (bytes[offset + 11] << 8);
+      const rgb0 = rgb565(color0);
+      const rgb1 = rgb565(color1);
+      const colors = [
+        [...rgb0, 255],
+        [...rgb1, 255],
+        [
+          Math.round((2 * rgb0[0] + rgb1[0]) / 3),
+          Math.round((2 * rgb0[1] + rgb1[1]) / 3),
+          Math.round((2 * rgb0[2] + rgb1[2]) / 3),
+          255,
+        ],
+        [
+          Math.round((rgb0[0] + 2 * rgb1[0]) / 3),
+          Math.round((rgb0[1] + 2 * rgb1[1]) / 3),
+          Math.round((rgb0[2] + 2 * rgb1[2]) / 3),
+          255,
+        ],
+      ];
+      const colorBits = view.getUint32(offset + 12, true);
+
+      for (let py = 0; py < 4; py += 1) {
+        for (let px = 0; px < 4; px += 1) {
+          const x = blockX * 4 + px;
+          const y = blockY * 4 + py;
+          if (x >= width || y >= height) {
+            continue;
+          }
+          const pixelIndex = py * 4 + px;
+          const color = colors[(colorBits >> (2 * pixelIndex)) & 0x03];
+          const alpha = alphaPalette[Number((alphaBits >> BigInt(3 * pixelIndex)) & 0x07n)];
+          const target = (y * width + x) * 4;
+          pixels[target] = color[0];
+          pixels[target + 1] = color[1];
+          pixels[target + 2] = color[2];
+          pixels[target + 3] = alpha;
+        }
+      }
+      offset += 16;
+    }
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").putImageData(new ImageData(pixels, width, height), 0, 0);
+  return canvas;
+}
+
+function trimDcsRasterTileCache() {
+  while (state.dcsRasterTileCache.size > DCS_RASTER_TILE_CACHE_LIMIT) {
+    const oldestKey = state.dcsRasterTileCache.keys().next().value;
+    state.dcsRasterTileCache.delete(oldestKey);
+  }
+}
+
+function loadDcsRasterTileCanvas(tile) {
+  const cacheKey = tile.url;
+  const cached = state.dcsRasterTileCache.get(cacheKey);
+  if (cached) {
+    state.dcsRasterTileCache.delete(cacheKey);
+    state.dcsRasterTileCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const promise = fetch(tile.url)
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`Could not load DCS raster tile (${response.status}).`);
+      }
+      return response.arrayBuffer();
+    })
+    .then(decodeDdsDxt5ToCanvas);
+  promise.catch(() => state.dcsRasterTileCache.delete(cacheKey));
+  state.dcsRasterTileCache.set(cacheKey, promise);
+  trimDcsRasterTileCache();
+  return promise;
+}
+
+function applyDcsRasterTileTransform(canvas, item) {
+  const transform = matrix3dForQuad(item.points, canvas.width || DCS_RASTER_TILE_SIZE, canvas.height || DCS_RASTER_TILE_SIZE);
+  if (!transform) {
+    return false;
+  }
+  canvas.style.transform = transform;
+  return true;
+}
+
+function renderDcsRasterChartTiles(terrain) {
+  const visibleTiles = visibleDcsRasterTiles(terrain);
+  if (!visibleTiles.length) {
+    return false;
+  }
+
+  const activeKeys = new Set();
+  for (const item of visibleTiles) {
+    const key = `dcs-raster:${item.tile.id}`;
+    activeKeys.add(key);
+    let canvas = elements.tileLayer.querySelector(`[data-key="${CSS.escape(key)}"]`);
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      canvas.width = item.tile.width || DCS_RASTER_TILE_SIZE;
+      canvas.height = item.tile.height || DCS_RASTER_TILE_SIZE;
+      canvas.dataset.key = key;
+      canvas.dataset.dcsRaster = "true";
+      canvas.className = "dcs-raster-tile";
+      state.tileStatuses.set(key, "pending");
+      elements.tileLayer.append(canvas);
+      loadDcsRasterTileCanvas(item.tile)
+        .then((decodedCanvas) => {
+          if (!canvas.isConnected) {
+            return;
+          }
+          canvas.width = decodedCanvas.width;
+          canvas.height = decodedCanvas.height;
+          canvas.getContext("2d").drawImage(decodedCanvas, 0, 0);
+          state.tileStatuses.set(key, "loaded");
+          applyDcsRasterTileTransform(canvas, item);
+          updateTileStatus();
+        })
+        .catch(() => {
+          state.tileStatuses.set(key, "failed");
+          canvas.style.opacity = "0";
+          updateTileStatus();
+        });
+    }
+    applyDcsRasterTileTransform(canvas, item);
+  }
+
+  for (const tile of Array.from(elements.tileLayer.children)) {
+    if (!activeKeys.has(tile.dataset.key)) {
+      tile.remove();
+    }
+  }
+  updateTileStatus();
+  return true;
+}
+
+function renderDcsMapTiles(terrain) {
+  elements.map.classList.remove("grid-basemap");
+  elements.map.classList.remove("tiles-loading", "tiles-unavailable");
+  elements.mapAttribution.textContent = terrain ? `DCS World: ${terrain.name}` : "DCS World terrain";
+  clearDcsVectorLayer();
+  if (renderDcsRasterChartTiles(terrain)) {
+    return;
+  }
+  if (!terrain?.mapImage?.url || terrain.mapImage.corners?.length !== 4) {
+    elements.tileLayer.replaceChildren();
+    state.tileStatuses.clear();
+    elements.map.classList.add("tiles-unavailable");
+    elements.map.classList.remove("tiles-loading");
+    elements.tileStatus.textContent = terrain?.unavailableReason ?? "DCS map unavailable. Using coordinate grid.";
+    elements.tileStatus.classList.add("visible");
+    return;
+  }
+
+  const key = dcsMapSourceValue(terrain.id);
+  let img = elements.tileLayer.querySelector(`[data-key="${CSS.escape(key)}"]`);
+  if (!img) {
+    elements.tileLayer.replaceChildren();
+    state.tileStatuses.clear();
+    img = document.createElement("img");
+    img.decoding = "async";
+    img.loading = "eager";
+    img.dataset.key = key;
+    img.dataset.dcsMap = "true";
+    img.className = "dcs-map-image";
+    img.alt = "";
+    img.crossOrigin = "anonymous";
+    img.addEventListener("load", () => {
+      state.tileStatuses.set(key, "loaded");
+      updateTileStatus();
+    });
+    img.addEventListener("error", () => {
+      state.tileStatuses.set(key, "failed");
+      img.style.opacity = "0";
+      updateTileStatus();
+    });
+    state.tileStatuses.set(key, "pending");
+    img.src = terrain.mapImage.url;
+    elements.tileLayer.append(img);
+  }
+  if (img.src !== terrain.mapImage.url) {
+    img.style.opacity = "";
+    state.tileStatuses.set(key, "pending");
+    img.src = terrain.mapImage.url;
+  }
+
+  img.style.width = `${terrain.mapImage.width}px`;
+  img.style.height = `${terrain.mapImage.height}px`;
+  const points = terrain.mapImage.corners.map((corner) => screenPointFor(corner.lat, corner.lng));
+  const transform = matrix3dForQuad(points, terrain.mapImage.width, terrain.mapImage.height);
+  if (!transform) {
+    elements.map.classList.add("tiles-unavailable");
+    elements.tileStatus.textContent = "DCS map projection unavailable. Using coordinate grid.";
+    elements.tileStatus.classList.add("visible");
+    return;
+  }
+  img.style.transform = transform;
+  updateTileStatus();
+}
+
 function renderTiles() {
-  if (state.mapSource === "grid") {
+  const provider = mapProviderForSource();
+  if (provider.fallback) {
+    state.mapSource = "grid";
+    renderTiles();
+    return;
+  }
+
+  if (provider.type === MAP_PROVIDER_TYPES.GRID) {
+    clearDcsVectorLayer();
     elements.tileLayer.replaceChildren();
     state.tileStatuses.clear();
     elements.map.classList.add("grid-basemap");
@@ -3847,7 +5420,13 @@ function renderTiles() {
     return;
   }
 
-  const tileSource = TILE_SOURCES[state.mapSource];
+  if (provider.type === MAP_PROVIDER_TYPES.DCS) {
+    renderDcsMapTiles(provider.terrain);
+    return;
+  }
+
+  const tileSource = provider.tileSource;
+  clearDcsVectorLayer();
   elements.map.classList.remove("grid-basemap");
   elements.mapAttribution.innerHTML = tileSource.attribution;
   const rect = elements.map.getBoundingClientRect();
@@ -5832,6 +7411,7 @@ function canDrawImageSource(imageOrSrc) {
   return (
     url.origin === window.location.origin ||
     url.protocol === "tarps-asset:" ||
+    url.protocol === "tarps-dcs-asset:" ||
     url.protocol === "blob:" ||
     url.protocol === "data:" ||
     (typeof imageOrSrc !== "string" && imageOrSrc.crossOrigin === "anonymous")
@@ -5849,7 +7429,7 @@ function loadImageForCanvas(src) {
   const promise = new Promise((resolve, reject) => {
     const image = new Image();
     image.decoding = "async";
-    if (src.startsWith("tarps-asset:")) {
+    if (src.startsWith("tarps-asset:") || src.startsWith("tarps-dcs-asset:")) {
       image.crossOrigin = "anonymous";
     }
     image.addEventListener("load", () => resolve(image), { once: true });
@@ -5866,9 +7446,136 @@ function drawTilesToCanvas(ctx) {
     if (!tile.complete || !tile.naturalWidth || !tile.naturalHeight || !canDrawImageSource(tile)) {
       continue;
     }
+    if (tile.dataset.dcsMap === "true") {
+      const terrain = activeDcsTerrainWithMap();
+      if (terrain?.mapImage?.corners?.length === 4) {
+        drawProjectedImageToCanvas(
+          ctx,
+          tile,
+          terrain.mapImage.corners.map((corner) => screenPointFor(corner.lat, corner.lng)),
+          { width: tile.naturalWidth, height: tile.naturalHeight },
+        );
+      }
+      continue;
+    }
     const transform = new DOMMatrixReadOnly(getComputedStyle(tile).transform);
     ctx.drawImage(tile, transform.m41, transform.m42, TILE_SIZE, TILE_SIZE);
   }
+}
+
+async function drawDcsVectorMapToCanvasForExport(ctx, terrain) {
+  if (!terrain?.vectorMap?.url || terrain.vectorMap.readable === false || !terrain?.geoReference) {
+    return false;
+  }
+  const record = loadDcsVectorMap(terrain);
+  const loadedRecord = record?.status === "loaded" ? record : await record?.promise;
+  if (loadedRecord?.status !== "loaded" || !dcsVectorRecordHasMapLinework(loadedRecord)) {
+    return false;
+  }
+  drawDcsVectorSegmentsToCanvas(ctx, loadedRecord.segments, ctx.canvas.width, ctx.canvas.height, 1);
+  return true;
+}
+
+async function drawDcsMapToCanvasForExport(ctx, provider = mapProviderForSource()) {
+  if (provider.type !== MAP_PROVIDER_TYPES.DCS) {
+    return false;
+  }
+  const terrain = provider.terrain;
+  if (terrain?.rasterCharts) {
+    const drewRasterCharts = await drawDcsRasterChartsToCanvasForExport(ctx, terrain);
+    if (drewRasterCharts) {
+      return true;
+    }
+  }
+  if (!terrain?.mapImage?.url) {
+    return false;
+  }
+  const image = await loadImageForCanvas(terrain.mapImage.url).catch(() => null);
+  if (!image?.complete || !image.naturalWidth || !image.naturalHeight || !canDrawImageSource(image)) {
+    return false;
+  }
+  drawProjectedImageToCanvas(
+    ctx,
+    image,
+    terrain.mapImage.corners.map((corner) => screenPointFor(corner.lat, corner.lng)),
+    { width: image.naturalWidth, height: image.naturalHeight },
+  );
+  return true;
+}
+
+async function drawDcsRasterChartsToCanvasForExport(ctx, terrain) {
+  const visibleTiles = visibleDcsRasterTiles(terrain);
+  if (!visibleTiles.length) {
+    return false;
+  }
+
+  const decoded = await Promise.all(
+    visibleTiles.map((item) =>
+      loadDcsRasterTileCanvas(item.tile)
+        .then((canvas) => ({ item, canvas }))
+        .catch(() => null),
+    ),
+  );
+
+  let drawn = 0;
+  for (const decodedTile of decoded) {
+    if (!decodedTile?.canvas) {
+      continue;
+    }
+    drawProjectedImageToCanvas(
+      ctx,
+      decodedTile.canvas,
+      decodedTile.item.points,
+      { width: decodedTile.canvas.width, height: decodedTile.canvas.height },
+    );
+    drawn += 1;
+  }
+  return drawn > 0;
+}
+
+async function drawDcsHeightMapToCanvasForExport(ctx, provider = mapProviderForSource()) {
+  if (!state.showDcsHeightMap) {
+    return false;
+  }
+  const terrain = provider.type === MAP_PROVIDER_TYPES.DCS ? provider.terrain : selectedDcsTerrain();
+  const lightmap = terrain?.lightmapElevation;
+  if (!lightmap?.url || !terrain?.geoReference) {
+    return false;
+  }
+  const record = loadDcsLightmapElevation(terrain);
+  const loadedRecord = record?.status === "loaded" ? record : await record?.promise.catch(() => null);
+  const tiles = colorizedDcsHeightMapTiles(loadedRecord);
+  const width = loadedRecord?.width || Number(lightmap.width);
+  const height = loadedRecord?.height || Number(lightmap.height);
+  if (!tiles.length || !width || !height) {
+    return false;
+  }
+
+  const layer = createCanvasSurface(ctx.canvas.width, ctx.canvas.height);
+  const layerCtx = layer.getContext("2d");
+  const viewport = mapViewportBounds(0);
+  let drawn = 0;
+  for (const tile of tiles) {
+    const corners = dcsLightmapTileCorners(terrain, tile, width, height);
+    if (!corners) {
+      continue;
+    }
+    const points = corners.map((corner) => screenPointFor(corner.lat, corner.lng));
+    if (!screenBoundsIntersect(boundsForScreenPoints(points), viewport)) {
+      continue;
+    }
+    drawProjectedImageToCanvas(layerCtx, tile.canvas, points, { width: tile.sw, height: tile.sh });
+    drawn += 1;
+  }
+
+  if (!drawn) {
+    return false;
+  }
+  ctx.save();
+  ctx.globalAlpha *= DCS_HEIGHT_MAP_OVERLAY_OPACITY;
+  ctx.drawImage(layer, 0, 0);
+  ctx.restore();
+  return true;
 }
 
 function expandedTrianglePoint(point, center, amount) {
@@ -6200,13 +7907,17 @@ async function exportCurrentView() {
     if (!window.electronTarps?.savePngAs) {
       throw new Error("TARPS desktop bridge is unavailable.");
     }
+    const mapProvider = mapProviderForSource();
     const rect = elements.map.getBoundingClientRect();
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(rect.width));
     canvas.height = Math.max(1, Math.round(rect.height));
     const ctx = canvas.getContext("2d");
     drawGridToCanvas(ctx, canvas.width, canvas.height);
-    drawTilesToCanvas(ctx);
+    if (!(await drawDcsMapToCanvasForExport(ctx, mapProvider))) {
+      drawTilesToCanvas(ctx);
+    }
+    await drawDcsHeightMapToCanvasForExport(ctx, mapProvider);
 
     const viewport = mapViewportBounds(0);
     const overlayItems = orderedCapturesForLayers()
@@ -6300,6 +8011,7 @@ function renderAll() {
     ensureSelectedCaptureVisible();
     updateTimelineControls();
     renderTiles();
+    renderDcsHeightMapOverlay();
     renderGrid();
     renderTracks();
     renderOverlays();
@@ -6605,6 +8317,27 @@ elements.coordInfoButton.addEventListener("click", (event) => {
 elements.mapSourceInput.addEventListener("change", () => {
   state.mapSource = elements.mapSourceInput.value;
   renderAll();
+  markIntelDirty();
+});
+
+elements.dcsTerrainInput?.addEventListener("change", () => {
+  state.dcsSelectedTerrainId = elements.dcsTerrainInput.value || null;
+  preloadSelectedDcsElevation();
+  renderAll();
+  renderSelectedDetails();
+  refreshCursorCoordinatesFromLastPointer();
+  markIntelDirty();
+});
+
+elements.dcsInstallButton.addEventListener("click", async () => {
+  try {
+    setDcsInstallStatus("Choose the DCS World install folder...");
+    await chooseDcsInstall();
+  } catch (error) {
+    console.error(error);
+    setDcsInstallStatus(error.message, true);
+    setStatus(error.message, true);
+  }
 });
 
 elements.groundElevationInput.addEventListener("input", () => {
@@ -6614,6 +8347,23 @@ elements.groundElevationInput.addEventListener("input", () => {
   }
   state.groundElevationFt = nextElevation;
   renderAll();
+  refreshCursorCoordinatesFromLastPointer();
+  markIntelDirty();
+});
+
+elements.dcsHeightMapInput?.addEventListener("change", () => {
+  state.showDcsHeightMap = elements.dcsHeightMapInput.checked;
+  renderAll();
+  markIntelDirty();
+});
+
+elements.dcsTerrainProjectionInput?.addEventListener("change", () => {
+  state.useDcsTerrainHeights = elements.dcsTerrainProjectionInput.checked;
+  if (state.useDcsTerrainHeights) {
+    preloadSelectedDcsElevation();
+  }
+  renderAll();
+  renderSelectedDetails();
   refreshCursorCoordinatesFromLastPointer();
   markIntelDirty();
 });
@@ -7122,6 +8872,9 @@ window.addEventListener("resize", renderAll);
 renderSetList();
 renderIntelStatus();
 setMarkupTool("pan");
+updateMapSourceOptions();
+updateDcsTerrainOptions();
+setDcsInstallStatus("No DCS install selected.");
 updateGroundElevationInput();
 renderCursorCoordinates();
 setStatus(

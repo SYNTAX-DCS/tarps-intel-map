@@ -476,6 +476,20 @@ input[type="range"] {
   flex: 1;
 }
 
+.dcs-install-row {
+  display: grid;
+  gap: 6px;
+}
+
+.dcs-install-row button {
+  width: 100%;
+}
+
+.dcs-install-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .button-grid,
 .tool-grid {
   display: grid;
@@ -777,6 +791,8 @@ input[type="color"] {
 }
 
 .tile-layer,
+.dcs-vector-layer,
+.dcs-debug-layer,
 .grid-layer,
 .track-layer,
 .overlay-canvas,
@@ -795,8 +811,44 @@ input[type="color"] {
   background: #1b1f18;
 }
 
+.tile-layer img.dcs-map-image {
+  width: auto;
+  height: auto;
+  transform-origin: 0 0;
+}
+
+.tile-layer canvas.dcs-raster-tile {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: auto;
+  height: auto;
+  transform-origin: 0 0;
+}
+
 .tile-layer {
   z-index: 0;
+}
+
+.dcs-vector-layer {
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.dcs-debug-layer {
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0.64;
+}
+
+.dcs-debug-layer canvas {
+  position: absolute;
+  max-width: none;
+  image-rendering: pixelated;
+  transform-origin: 0 0;
 }
 
 .grid-layer {

@@ -16,6 +16,9 @@
         <rect width="14" height="14" x="8" y="8" rx="2"></rect>
         <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
       </symbol>
+      <symbol id="icon-folder-open" viewBox="0 0 24 24">
+        <path d="m6 14 1.5-2.9A2 2 0 0 1 9.3 10H20a2 2 0 0 1 1.8 2.9l-2 4A2 2 0 0 1 18 18H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2"></path>
+      </symbol>
       <symbol id="icon-grid-3x3" viewBox="0 0 24 24">
         <rect width="18" height="18" x="3" y="3" rx="2"></rect>
         <path d="M3 9h18"></path>
@@ -160,8 +163,27 @@
             <option value="grid">Coordinate grid</option>
             <option value="osm">OpenStreetMap tiles</option>
           </select>
+          <div class="dcs-install-row">
+            <button id="dcsInstallButton" class="button-with-icon" type="button">
+              <svg class="app-icon button-icon" aria-hidden="true"><use href="#icon-folder-open"></use></svg>
+              <span>DCS install folder</span>
+            </button>
+            <output id="dcsInstallStatus" class="status dcs-install-status" aria-live="polite">No DCS install selected.</output>
+          </div>
+          <label for="dcsTerrainInput">DCS height map</label>
+          <select id="dcsTerrainInput" disabled>
+            <option value="">No DCS height map</option>
+          </select>
           <label for="groundElevationInput">Ground elevation (ft)</label>
           <input id="groundElevationInput" type="number" step="1" value="0" />
+          <label class="check-row">
+            <input id="dcsTerrainProjectionInput" type="checkbox" checked />
+            <span>Use DCS heights</span>
+          </label>
+          <label class="check-row">
+            <input id="dcsHeightMapInput" type="checkbox" />
+            <span>Show DCS height map</span>
+          </label>
           <label class="check-row">
             <input id="imagesInput" type="checkbox" checked />
             <span>Photos</span>
@@ -263,6 +285,8 @@
       <section class="map-wrap" aria-label="Interactive map">
         <div id="map" class="map" tabindex="0">
           <div id="tileLayer" class="tile-layer"></div>
+          <canvas id="dcsVectorLayer" class="dcs-vector-layer" aria-hidden="true"></canvas>
+          <div id="dcsDebugLayer" class="dcs-debug-layer" aria-hidden="true"></div>
           <svg id="gridLayer" class="grid-layer" aria-hidden="true"></svg>
           <svg id="trackLayer" class="track-layer" aria-hidden="true"></svg>
           <canvas id="overlayCanvas" class="overlay-canvas" aria-hidden="true"></canvas>

@@ -13,6 +13,7 @@ function assetUrl(projectPath, assetPath) {
 
 contextBridge.exposeInMainWorld("electronTarps", {
   assetUrl,
+  chooseDcsInstall: () => ipcRenderer.invoke("tarps:choose-dcs-install"),
   chooseTarpsDirectory: () => ipcRenderer.invoke("tarps:choose-directory"),
   copyImageToProject: (projectPath, setId, relativePath, sourceFilePath) =>
     ipcRenderer.invoke("tarps:copy-image-to-project", projectPath, setId, relativePath, sourceFilePath),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld("electronTarps", {
   deleteProjectAssets: (projectPath, assetPaths) => ipcRenderer.invoke("tarps:delete-project-assets", projectPath, assetPaths),
   openProjectFolder: () => ipcRenderer.invoke("tarps:open-project-folder"),
   savePngAs: (suggestedName, pngPayload) => ipcRenderer.invoke("tarps:save-png-as", suggestedName, pngPayload),
+  scanDcsInstall: (installPath) => ipcRenderer.invoke("tarps:scan-dcs-install", installPath),
   writeProjectManifest: (projectPath, text) => ipcRenderer.invoke("tarps:write-project-manifest", projectPath, text),
   getWindowState: () => ipcRenderer.invoke("tarps:window-state"),
   minimizeWindow: () => ipcRenderer.invoke("tarps:window-minimize"),

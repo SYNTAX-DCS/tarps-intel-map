@@ -36,6 +36,8 @@ The app has a basemap selector with a local coordinate grid and OpenStreetMap ti
 
 For public or heavy use, use a proper tile provider or local tile service rather than relying on `tile.openstreetmap.org`.
 
+If DCS World is installed locally, use the DCS install folder control in Layers to point TARPS at the DCS World root folder. TARPS scans `Mods/terrains` and adds installed DCS theatres with readable height data to the separate DCS height map selector. DCS terrain files are opened read-only. DCS raster charts and vector map files are detected for future investigation, but they are not currently shown as basemaps.
+
 ## Filename Metadata
 
 The parser currently expects filenames shaped like:
@@ -53,6 +55,8 @@ The scale uses a fixed 150 mm KS-87 focal length and a 100 mm square frame side.
 Pitch and roll are projected with a pinhole camera model for attitudes up to 45 degrees in either axis. The photo corners are intersected with the ground plane and rendered as a projective warp, so farther parts of an oblique frame cover larger ground distances. Captures beyond 45 degrees pitch or roll are still shown, but as unwarped rectangular images at the aircraft position with no pitch or roll projection applied.
 
 Pitch and roll projection and image warping are always enabled for captures within the 45 degree attitude limit. Image orientation follows heading only; drift is not applied.
+
+The Ground elevation field is the fallback terrain height. If a selected DCS terrain exposes a plain `tarps-elevation.json` / `tarps-dem.json` style grid with latitude/longitude bounds and row-major elevation values, TARPS samples that grid for terrain-aware ray intersections instead of using one flat elevation. Stock DCS terrains also expose `extra/lightmap/lightmap_depthMax.png` with `extra/lightmap/lightmap.lua` metadata; TARPS samples that read-only alpha-channel height image as a coarse DCS terrain source when an exact grid is unavailable. This lightmap appears to be a max-height raster at roughly 512 m cells, so it is useful for hill-aware projection but less precise than the underlying DCS surface mesh. TARPS fits the DCS local terrain grid to latitude/longitude with a curved beacon-derived polynomial georeference, with lower-order fallback for small fixture terrains, so broad theatres are not forced through a single flat affine transform. The Layers panel can choose a DCS height map independently from the basemap and can toggle DCS heights on or off for image projection; when disabled, projections use the manual Ground elevation field. A separate DCS height map visibility toggle colorizes and warps the lightmap over OpenStreetMap or the coordinate grid for alignment checks and includes it in PNG exports. Stock DCS `Surface/*.surface5`, `.tile`, `.ng5`, and `.sup4` surface files are detected from disk, but the app currently treats them as read-only candidate mesh sources until a safe on-disk height decoder can produce sampled elevations.
 
 ## Layer Navigation
 
