@@ -48,7 +48,7 @@ Latitude/longitude are parsed from DMS, altitude is treated as feet, and heading
 
 ## Scale Assumptions
 
-The scale uses a fixed 150 mm KS-87 focal length and a 100 mm square frame side.
+The scale uses a fixed 150 mm KS-87 focal length and a 100 mm horizontal frame width. Each capture's pixel dimensions determine its frame aspect ratio, so square images retain the original 100 mm square footprint while rectangular images are mapped without stretching.
 
 Pitch and roll are projected with a pinhole camera model for attitudes up to 45 degrees in either axis. The photo corners are intersected with the ground plane and rendered as a projective warp, so farther parts of an oblique frame cover larger ground distances. Captures beyond 45 degrees pitch or roll are still shown, but as unwarped rectangular images at the aircraft position with no pitch or roll projection applied.
 

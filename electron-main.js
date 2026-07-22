@@ -622,6 +622,8 @@ function overlayPreviewEntries(archivePath, setId, relativePath, sourceImage) {
   }
 
   return {
+    imageWidth: sourceSize.width,
+    imageHeight: sourceSize.height,
     overlayPreviews: previews,
     overlayAssetPath: preferred.assetPath,
     overlayFileUrl: preferred.fileUrl,
@@ -648,6 +650,9 @@ async function copyImageIntoProject(projectPath, setId, relativePath, sourceFile
   const assetPath = safeImageRelativePath(setId, relativePath || path.basename(sourceFilePath));
   const sourceBuffer = await fs.readFile(sourceFilePath);
   const sourceImage = nativeImage.createFromBuffer(sourceBuffer);
+  if (sourceImage.isEmpty()) {
+    throw new Error(`Could not decode ${path.basename(sourceFilePath)} as a supported PNG, JPG, or WebP image.`);
+  }
   const overlay = overlayPreviewEntries(projectPath, setId, relativePath || path.basename(sourceFilePath), sourceImage);
   await appendStoreZipEntries(projectPath, [
     { name: assetPath, buffer: sourceBuffer },

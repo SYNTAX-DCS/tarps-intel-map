@@ -88,6 +88,8 @@ const elements = {
   intelDialog: document.querySelector("#intelDialog"),
   dialogNewIntelButton: document.querySelector("#dialogNewIntelButton"),
   dialogLoadIntelButton: document.querySelector("#dialogLoadIntelButton"),
+  importFilenameDialog: document.querySelector("#importFilenameDialog"),
+  importFilenameMessage: document.querySelector("#importFilenameMessage"),
   deleteCaptureDialog: document.querySelector("#deleteCaptureDialog"),
   deleteCaptureMessage: document.querySelector("#deleteCaptureMessage"),
   deleteCaptureConfirmButton: document.querySelector("#deleteCaptureConfirmButton"),
@@ -1089,12 +1091,29 @@ function captureHeightAboveGroundM(capture) {
   return captureHeightAboveGroundFt(capture) * 0.3048;
 }
 
+function captureImageAspectRatio(capture) {
+  const candidates = [
+    [capture.imageWidth, capture.imageHeight],
+    ...Object.values(capture.overlayPreviews ?? {}).map((preview) => [preview?.width, preview?.height]),
+    [capture.overlayWidth, capture.overlayHeight],
+  ];
+  for (const [widthValue, heightValue] of candidates) {
+    const width = Number(widthValue);
+    const height = Number(heightValue);
+    if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+      return width / height;
+    }
+  }
+  return 1;
+}
+
 function imageFootprintMeters(capture) {
   const altitudeM = captureHeightAboveGroundM(capture);
-  const sideM = 2 * altitudeM * Math.tan(Math.atan(state.frameMm / (2 * state.focalMm)));
+  const frameWidthMm = state.frameMm;
+  const frameHeightMm = frameWidthMm / captureImageAspectRatio(capture);
   return {
-    widthM: sideM,
-    heightM: sideM,
+    widthM: 2 * altitudeM * Math.tan(Math.atan(frameWidthMm / (2 * state.focalMm))),
+    heightM: 2 * altitudeM * Math.tan(Math.atan(frameHeightMm / (2 * state.focalMm))),
     altitudeM,
   };
 }
@@ -1176,8 +1195,9 @@ function warpedImageProjection(capture) {
   }
 
   const footprint = imageFootprintMeters(capture);
-  const halfFrameRatio = state.frameMm / (2 * state.focalMm);
-  if (!Number.isFinite(footprint.altitudeM) || !Number.isFinite(halfFrameRatio)) {
+  const halfFrameWidthRatio = state.frameMm / (2 * state.focalMm);
+  const halfFrameHeightRatio = halfFrameWidthRatio / captureImageAspectRatio(capture);
+  if (!Number.isFinite(footprint.altitudeM) || !Number.isFinite(halfFrameWidthRatio) || !Number.isFinite(halfFrameHeightRatio)) {
     return locationOnlyProjection(capture, "invalid-camera");
   }
   if (footprint.altitudeM <= 0) {
@@ -1202,10 +1222,10 @@ function warpedImageProjection(capture) {
   const centerRightM = rightSlope * footprint.altitudeM;
   const centerForwardM = forwardSlope * footprint.altitudeM;
   const sourceCorners = [
-    { u: -halfFrameRatio, v: halfFrameRatio },
-    { u: halfFrameRatio, v: halfFrameRatio },
-    { u: halfFrameRatio, v: -halfFrameRatio },
-    { u: -halfFrameRatio, v: -halfFrameRatio },
+    { u: -halfFrameWidthRatio, v: halfFrameHeightRatio },
+    { u: halfFrameWidthRatio, v: halfFrameHeightRatio },
+    { u: halfFrameWidthRatio, v: -halfFrameHeightRatio },
+    { u: -halfFrameWidthRatio, v: -halfFrameHeightRatio },
   ];
   const corners = [];
   const cornersMeters = [];
@@ -1711,17 +1731,22 @@ function parseCapture(url, options = {}) {
   return parseCaptureFromFileName(filenameFromUrl(url), url, options);
 }
 
-function parseCaptureFromFileName(fileName, url, options = {}) {
+function captureMetadataFromFileName(fileName) {
   const stem = fileName.replace(/\.[^.]+$/, "");
   const match = stem.match(
     /^TARPS\s+(?<camera>\S+)\s+(?<time>\d{2}-\d{2}-\d{2})(?<station>[A-Z])\s+(?<date>\d{2}-\d{2}-\d{4})\s+(?<lat>[NS]\d{2}-\d{2}-\d{2})\s+(?<lng>[EW]\d{3}-\d{2}-\d{2})\s+ALT(?<alt>[+-]\d+)\s+DRIFT(?<drift>[+-]\d+)\s+HDG(?<heading>\d+)\s+PITCH(?<pitch>[+-]\d+)\s+ROLL(?<roll>[+-]\d+)$/,
   );
 
   if (!match?.groups) {
-    throw new Error(`Filename does not match TARPS metadata pattern: ${fileName}`);
+    const error = new Error(`Could not read TARPS metadata from filename: ${fileName}`);
+    error.code = "TARPS_FILENAME_METADATA";
+    throw error;
   }
+  return match.groups;
+}
 
-  const groups = match.groups;
+function parseCaptureFromFileName(fileName, url, options = {}) {
+  const groups = captureMetadataFromFileName(fileName);
   const baseId = `${groups.date}-${groups.time}${groups.station}-${groups.lat}-${groups.lng}`;
   const relativePath = options.relativePath ?? fileName;
   const setId = options.setId ?? "default";
@@ -1759,6 +1784,8 @@ function parseCaptureFromFileName(fileName, url, options = {}) {
     overlaySizeBytes: Number.isFinite(Number(options.overlaySizeBytes)) ? Number(options.overlaySizeBytes) : null,
     overlayWidth: Number.isFinite(Number(options.overlayWidth)) ? Number(options.overlayWidth) : null,
     overlayHeight: Number.isFinite(Number(options.overlayHeight)) ? Number(options.overlayHeight) : null,
+    imageWidth: Number.isFinite(Number(options.imageWidth)) ? Number(options.imageWidth) : null,
+    imageHeight: Number.isFinite(Number(options.imageHeight)) ? Number(options.imageHeight) : null,
     mimeType: options.mimeType ?? null,
     sizeBytes: Number.isFinite(Number(options.sizeBytes)) ? Number(options.sizeBytes) : null,
   };
@@ -2103,6 +2130,8 @@ function currentIntelPayload() {
         overlaySizeBytes: capture.overlaySizeBytes ?? null,
         overlayWidth: capture.overlayWidth ?? null,
         overlayHeight: capture.overlayHeight ?? null,
+        imageWidth: capture.imageWidth ?? null,
+        imageHeight: capture.imageHeight ?? null,
         dataUrl: capture.assetPath ? null : capture.dataUrl ?? capture.url,
         adjustments: cloneAdjustments(capture.adjustments),
       })),
@@ -2190,6 +2219,8 @@ async function refreshMissingOverlayPreviews() {
     capture.overlaySizeBytes = preview.overlaySizeBytes ?? capture.overlaySizeBytes;
     capture.overlayWidth = preview.overlayWidth ?? capture.overlayWidth;
     capture.overlayHeight = preview.overlayHeight ?? capture.overlayHeight;
+    capture.imageWidth = preview.imageWidth ?? capture.imageWidth;
+    capture.imageHeight = preview.imageHeight ?? capture.imageHeight;
     updatedCount += 1;
   }
 
@@ -2249,6 +2280,8 @@ function loadEmbeddedSetsFromIntel() {
             overlaySizeBytes: intelCapture.overlaySizeBytes,
             overlayWidth: intelCapture.overlayWidth,
             overlayHeight: intelCapture.overlayHeight,
+            imageWidth: intelCapture.imageWidth,
+            imageHeight: intelCapture.imageHeight,
             mimeType: intelCapture.mimeType,
             sizeBytes: intelCapture.sizeBytes,
           }),
@@ -2445,6 +2478,13 @@ function addParsedSet(set, parsed, failures) {
   }
 }
 
+function showImportFilenameWarning(count) {
+  elements.importFilenameMessage.textContent = `${count} image${count === 1 ? " has" : "s have"} a filename that does not match the original TARPS output format.`;
+  if (elements.importFilenameDialog?.showModal) {
+    elements.importFilenameDialog.showModal();
+  }
+}
+
 async function importFileEntriesAsSet(name, entries, getFile, progress) {
   const perfStart = performance.now();
   const set = createCaptureSet(name, { sourceDirectory: name });
@@ -2460,6 +2500,7 @@ async function importFileEntriesAsSet(name, entries, getFile, progress) {
     let nextEntryIndex = 0;
     async function processEntry(entry) {
       try {
+        captureMetadataFromFileName(entry.fileName);
         const file = await getFile(entry, set);
         const imageUrl = file.url ?? file.dataUrl;
         if (!imageUrl) {
@@ -2482,12 +2523,18 @@ async function importFileEntriesAsSet(name, entries, getFile, progress) {
             overlaySizeBytes: file.overlaySizeBytes,
             overlayWidth: file.overlayWidth,
             overlayHeight: file.overlayHeight,
+            imageWidth: file.imageWidth,
+            imageHeight: file.imageHeight,
             mimeType: mimeTypeForImage(file),
             sizeBytes: file.size ?? file.sizeBytes,
           }),
         );
       } catch (error) {
-        failures.push(error.message);
+        failures.push({
+          type: error?.code === "TARPS_FILENAME_METADATA" ? "filename" : "image",
+          fileName: entry.fileName,
+          message: error.message,
+        });
       } finally {
         progress.done += 1;
         setImportProgress(progress.done, progress.total, `Copying images into intel archive (${progress.done}/${progress.total})...`);
@@ -2505,7 +2552,12 @@ async function importFileEntriesAsSet(name, entries, getFile, progress) {
     await Promise.all(workers);
 
     addParsedSet(set, parsed, failures);
-    return { loaded: parsed.length, skipped: failures.length };
+    return {
+      loaded: parsed.length,
+      skipped: failures.length,
+      filenameFailures: failures.filter((failure) => failure.type === "filename").length,
+      imageFailures: failures.filter((failure) => failure.type === "image").length,
+    };
   } finally {
     recordPerformance("importFileEntriesAsSet", performance.now() - perfStart, entries.length);
   }
@@ -2559,15 +2611,30 @@ async function addElectronDirectorySet() {
         overlaySizeBytes: copied.overlaySizeBytes,
         overlayWidth: copied.overlayWidth,
         overlayHeight: copied.overlayHeight,
+        imageWidth: copied.imageWidth,
+        imageHeight: copied.imageHeight,
       };
     },
     progress,
   );
   hideImportProgress();
-  setStatus(
-    `${directory.name}: copied ${result.loaded} image${result.loaded === 1 ? "" : "s"} into the intel archive (${result.skipped} skipped).`,
-    result.loaded === 0,
-  );
+  if (result.filenameFailures) {
+    const otherFailures = result.imageFailures
+      ? ` ${result.imageFailures} other image${result.imageFailures === 1 ? "" : "s"} could not be read or copied.`
+      : "";
+    setStatus(
+      `${directory.name}: imported ${result.loaded}; could not read TARPS metadata from ${result.filenameFailures} filename${result.filenameFailures === 1 ? "" : "s"}.${otherFailures} Check that filenames are unchanged from the original TARPS output folder.`,
+      true,
+    );
+    showImportFilenameWarning(result.filenameFailures);
+  } else if (result.imageFailures) {
+    setStatus(
+      `${directory.name}: imported ${result.loaded}; ${result.imageFailures} image${result.imageFailures === 1 ? "" : "s"} could not be decoded or copied. Supported types are PNG, JPG, and WebP.`,
+      true,
+    );
+  } else {
+    setStatus(`${directory.name}: imported ${result.loaded} image${result.loaded === 1 ? "" : "s"} into the intel archive.`, false);
+  }
 }
 
 function clearSets() {
