@@ -2,7 +2,15 @@ const TILE_SIZE = 256;
 const EARTH_RADIUS_M = 6378137;
 const EARTH_CIRCUMFERENCE_M = 2 * Math.PI * EARTH_RADIUS_M;
 const MAX_MERCATOR_LAT = 85.05112878;
-const DEFAULT_CENTER = { lat: 25.255, lng: 55.375 };
+// Where an empty archive opens, before anything is imported. The Gulf is the
+// stock default; a deployment for another theatre can set window.TARPS_DEFAULT_VIEW
+// before this script loads. Once captures exist fitCaptures() frames those instead.
+const DEFAULT_VIEW = window.TARPS_DEFAULT_VIEW ?? {};
+const DEFAULT_CENTER = {
+  lat: Number.isFinite(DEFAULT_VIEW.lat) ? DEFAULT_VIEW.lat : 25.255,
+  lng: Number.isFinite(DEFAULT_VIEW.lng) ? DEFAULT_VIEW.lng : 55.375,
+};
+const DEFAULT_ZOOM = Number.isFinite(DEFAULT_VIEW.zoom) ? DEFAULT_VIEW.zoom : 13;
 const DEFAULT_FOCAL_MM = 150;
 const DEFAULT_FRAME_MM = 100;
 const DEFAULT_GROUND_ELEVATION_FT = 0;
@@ -157,7 +165,7 @@ const state = {
   nextSetNumber: 1,
   selectedId: null,
   center: DEFAULT_CENTER,
-  zoom: 13,
+  zoom: DEFAULT_ZOOM,
   minZoom: 3,
   maxZoom: 19,
   focalMm: DEFAULT_FOCAL_MM,
@@ -3870,7 +3878,7 @@ function fitCaptures() {
   const captures = visibleCaptures();
   if (!captures.length) {
     state.center = normalizeLatLng(DEFAULT_CENTER);
-    state.zoom = 13;
+    state.zoom = DEFAULT_ZOOM;
     return;
   }
 

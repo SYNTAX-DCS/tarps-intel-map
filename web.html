@@ -470,6 +470,13 @@
          up space and inviting a click. */
       body:not(.has-window-controls) .titlebar-controls { display: none; }
     </style>
+    <script>
+      // Syria, because that is the theatre this build is flown on. Only the
+      // empty starting view: once a folder is imported the map frames the
+      // captures wherever in the world they are. Not deferred, because
+      // app.js reads this while evaluating its constants.
+      window.TARPS_DEFAULT_VIEW = { lat: 34.5, lng: 37.0, zoom: 8 };
+    </script>
     <script defer src="src/web-bridge.js"></script>
     <script defer src="src/app.js"></script>
   </body>

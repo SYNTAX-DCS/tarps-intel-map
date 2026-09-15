@@ -41,6 +41,11 @@ Then http://127.0.0.1:8801/web.html
 browser. Archives are the same store-only `.tarpsintel.zip`, so one made in the
 browser opens in the desktop app and the other way round.
 
+The web build opens on Syria when an archive is empty, set by
+`window.TARPS_DEFAULT_VIEW` in `web.html`. That is only the starting view: once
+a folder is imported the map frames the captures wherever in the world they
+are. The desktop build is unaffected and still opens on the Gulf.
+
 Archive and folder pickers use the File System Access API, so a Chromium browser
 is needed to create or load an archive; folder import falls back to a directory
 input elsewhere. There is no window chrome in a tab, so the titlebar buttons are
