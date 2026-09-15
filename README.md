@@ -26,6 +26,27 @@ npm run pack:win
 
 The Electron build uses native Windows file/save dialogs. New and Load work with single `.tarpsintel.zip` archives, imported TARPS folders are copied into the archive, autosave updates `manifest.json` inside the archive, and Export image uses a native PNG save dialog.
 
+## Run In A Browser
+
+`web.html` is the same app with no Electron. Serve the folder and open it:
+
+```powershell
+python -m http.server 8801
+```
+
+Then http://127.0.0.1:8801/web.html
+
+`src/app.js` is not changed for this: it only ever reaches for
+`window.electronTarps`, and `src/web-bridge.js` supplies that object in a
+browser. Archives are the same store-only `.tarpsintel.zip`, so one made in the
+browser opens in the desktop app and the other way round.
+
+Archive and folder pickers use the File System Access API, so a Chromium browser
+is needed to create or load an archive; folder import falls back to a directory
+input elsewhere. There is no window chrome in a tab, so the titlebar buttons are
+hidden. The archive is held in memory and rewritten whole on each save rather
+than appended to, which is simpler but costs more on a large one.
+
 ## Intel Archives
 
 Use Import TARPS folder to copy one or more TARPS image folders into the active intel archive. Each imported folder becomes a separate run with editable name, colour, and visibility. Intel archives use the `.tarpsintel.zip` double extension, are written with ZIP store entries only, and can be browsed directly in Windows Explorer as normal ZIP files. Copied source images live in `images/`, `manifest.json` stores the session state, and the app creates small, medium, and large `overlays/` previews for fast canvas map rendering while keeping the originals for preview and export.
