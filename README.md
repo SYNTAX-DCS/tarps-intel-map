@@ -48,7 +48,9 @@ Latitude/longitude are parsed from DMS, altitude is treated as feet, and heading
 
 ## Scale Assumptions
 
-The scale uses a fixed 150 mm KS-87 focal length and a 100 mm horizontal frame width. Each capture's pixel dimensions determine its frame aspect ratio, so square images retain the original 100 mm square footprint while rectangular images are mapped without stretching.
+Optics are looked up per camera from the camera token in the filename. The KS-87 uses a 150 mm focal length and a 100 mm horizontal frame width. Each capture's pixel dimensions determine its frame aspect ratio, so square images retain the original 100 mm square footprint while rectangular images are mapped without stretching.
+
+The pod also carries a KA-99, which the module declares alongside the KS-87 (`ccTARPS_KS87` and `ccTARPS_KA99` in `Cockpit/device_init.lua`, with matching `TARPS_KS87_Material` and `TARPS_KA99_Material` in `bin/F14-Avionics.dll`). Its modelled focal length is not published in anything the module ships in the clear, so no figure is assumed for it here. A capture from a camera with no entry is still drawn, using the focal length and frame width in Settings, and the capture panel says the scale was assumed rather than read. Add the camera to `CAMERA_OPTICS` in `src/app.js` once a real figure is known.
 
 Pitch and roll are projected with a pinhole camera model for attitudes up to 45 degrees in either axis. The photo corners are intersected with the ground plane and rendered as a projective warp, so farther parts of an oblique frame cover larger ground distances. Captures beyond 45 degrees pitch or roll are still shown, but as unwarped rectangular images at the aircraft position with no pitch or roll projection applied.
 

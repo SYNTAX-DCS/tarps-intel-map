@@ -5,6 +5,13 @@ const MAX_MERCATOR_LAT = 85.05112878;
 const DEFAULT_CENTER = { lat: 25.255, lng: 55.375 };
 const DEFAULT_FOCAL_MM = 150;
 const DEFAULT_FRAME_MM = 100;
+
+// Optics per camera. The KA-99 is absent because its modelled focal length
+// is not published; an unknown camera falls back to the Settings values.
+const CAMERA_OPTICS = {
+  "KS-87": { focalMm: DEFAULT_FOCAL_MM, frameMm: DEFAULT_FRAME_MM },
+};
+
 const DEFAULT_GROUND_ELEVATION_FT = 0;
 const MAX_WARP_ATTITUDE_DEG = 45;
 const DEFAULT_OVERLAY_SOURCE_SIZE_PX = 2048;
@@ -1107,13 +1114,38 @@ function captureImageAspectRatio(capture) {
   return 1;
 }
 
+// Longest known prefix, so the station suffix in "KS-87D" still matches.
+function cameraOpticsFor(capture) {
+  const token = String(capture?.camera ?? "").toUpperCase();
+  let best = null;
+  for (const [name, optics] of Object.entries(CAMERA_OPTICS)) {
+    if (token.startsWith(name.toUpperCase()) && (!best || name.length > best.name.length)) {
+      best = { name, optics };
+    }
+  }
+  if (best) {
+    return { focalMm: best.optics.focalMm, frameMm: best.optics.frameMm, camera: best.name, known: true };
+  }
+  return { focalMm: state.focalMm, frameMm: state.frameMm, camera: token, known: false };
+}
+
+// Say whether the scale was read from a known camera or assumed.
+function cameraLabel(capture) {
+  const optics = cameraOpticsFor(capture);
+  const token = capture?.camera ?? "";
+  return optics.known
+    ? `${token} (${optics.focalMm} mm)`
+    : `${token} (optics unknown, scaled as ${optics.focalMm} mm)`;
+}
+
 function imageFootprintMeters(capture) {
   const altitudeM = captureHeightAboveGroundM(capture);
-  const frameWidthMm = state.frameMm;
+  const optics = cameraOpticsFor(capture);
+  const frameWidthMm = optics.frameMm;
   const frameHeightMm = frameWidthMm / captureImageAspectRatio(capture);
   return {
-    widthM: 2 * altitudeM * Math.tan(Math.atan(frameWidthMm / (2 * state.focalMm))),
-    heightM: 2 * altitudeM * Math.tan(Math.atan(frameHeightMm / (2 * state.focalMm))),
+    widthM: 2 * altitudeM * Math.tan(Math.atan(frameWidthMm / (2 * optics.focalMm))),
+    heightM: 2 * altitudeM * Math.tan(Math.atan(frameHeightMm / (2 * optics.focalMm))),
     altitudeM,
   };
 }
@@ -1195,7 +1227,8 @@ function warpedImageProjection(capture) {
   }
 
   const footprint = imageFootprintMeters(capture);
-  const halfFrameWidthRatio = state.frameMm / (2 * state.focalMm);
+  const optics = cameraOpticsFor(capture);
+  const halfFrameWidthRatio = optics.frameMm / (2 * optics.focalMm);
   const halfFrameHeightRatio = halfFrameWidthRatio / captureImageAspectRatio(capture);
   if (!Number.isFinite(footprint.altitudeM) || !Number.isFinite(halfFrameWidthRatio) || !Number.isFinite(halfFrameHeightRatio)) {
     return locationOnlyProjection(capture, "invalid-camera");
@@ -2880,7 +2913,7 @@ function renderSelectedDetails() {
   const details = [
     ["Capture", captureSummary(capture)],
     ["Set", capture.setName],
-    ["Camera", capture.camera],
+    ["Camera", cameraLabel(capture)],
     ["Position", `${position.lat.toFixed(6)}, ${position.lng.toFixed(6)}`],
     ["Altitude", `${capture.altFt.toLocaleString()} ft`],
     ["Ground", `${state.groundElevationFt.toLocaleString()} ft`],
