@@ -1732,7 +1732,8 @@ function parseCapture(url, options = {}) {
 }
 
 function captureMetadataFromFileName(fileName) {
-  const stem = fileName.replace(/\.[^.]+$/, "");
+  // DCS writes a space before the extension: "... ROLL-02 .jpg"
+  const stem = fileName.replace(/\.[^.]+$/, "").trim();
   const match = stem.match(
     /^TARPS\s+(?<camera>\S+)\s+(?<time>\d{2}-\d{2}-\d{2})(?<station>[A-Z])\s+(?<date>\d{2}-\d{2}-\d{4})\s+(?<lat>[NS]\d{2}-\d{2}-\d{2})\s+(?<lng>[EW]\d{3}-\d{2}-\d{2})\s+ALT(?<alt>[+-]\d+)\s+DRIFT(?<drift>[+-]\d+)\s+HDG(?<heading>\d+)\s+PITCH(?<pitch>[+-]\d+)\s+ROLL(?<roll>[+-]\d+)$/,
   );
